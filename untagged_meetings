@@ -142,13 +142,13 @@ function updateMeetingTag(e, isSingleEditMode) {
 }
 
 // =================================================================
-// =========== "TO-DO LIST" CREATOR (FINAL CORRECTED v5.8) ============
+// =========== "TO-DO LIST" CREATOR (FINAL CORRECTED v5.9) ============
 // =================================================================
 /**
  * WHAT IT DOES: Reads your calendar and populates the "Untagged Meetings" sheet.
  * WHY THE CHANGE:
- * A new, simple filter has been added. If 'ExternalAttendees' is FALSE, it will now
- * explicitly ignore any event created by a '@group.calendar.google.com' email.
+ * Added a new conditional block to the formatting section. If SETagMode=FALSE and
+ * ShowTaggedMeetings=TRUE, it will now color the rows of untagged meetings red.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -189,13 +189,10 @@ function findEventsMissingTag() {
             const title = event.summary;
             if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
-
-            // --- THIS IS THE FIX (v5.8) ---
-            // If the filter is set to FALSE, specifically ignore events created by group calendars.
+            
             if (externalFilter === false && organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) {
-              continue; // Skip this event
+              continue;
             }
-            // --- END OF FIX ---
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
@@ -256,10 +253,23 @@ function findEventsMissingTag() {
             const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']);
             extRange.setBackgrounds(extColors);
         }
+
+        // --- THIS IS THE NEW COLORING LOGIC (v5.9) ---
+        // Original logic for SETagMode = TRUE
         if (seTaggingMode) {
-            if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-            if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+            if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); // Red
+            if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc'); // Yellow
+        } 
+        // New logic for your specific flag combination
+        else if (!seTaggingMode && showTaggedMeetings && externalFilter) {
+            // The final list is composed of noTagMeetings first, then fullyTaggedMeetings.
+            // We only need to color the 'noTagMeetings' portion.
+            if (noTagMeetings.length > 0) {
+                sheet.getRange(startRow, 1, noTagMeetings.length, headers.length).setBackground('#f4cccc'); // Red
+            }
         }
+        // --- END OF NEW LOGIC ---
+
         if (fullyTaggedMeetings.length > 0) {
             sheet.getRange(startRow + noTagMeetings.length + aeTaggedMeetings.length, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
         }
