@@ -1,0 +1,428 @@
+/**
+ * @file Meeting Tagger Tool v6.0
+ * @description This script provides tools to find, list, and batch-update Google Calendar events
+ * based on custom tags defined in a spreadsheet. It is optimized for performance to handle
+ * large numbers of events without timing out.
+ * @author Your Name
+ * @version 6.0.0
+ */
+
+// =================================================================
+// #region 1. SPREADSHEET UI & MENU CREATION
+// =================================================================
+
+/**
+ * @description Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
+ * This is a special function recognized by Google Apps Script.
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+      .createMenu('Meeting Tools')
+      .addItem('Save Config & Refresh', 'saveConfigAndRun')
+      .addItem('Refresh Untagged List', 'findEventsMissingTag')
+      .addSeparator()
+      .addItem('Apply Changes to Calendar', 'applyBatchChanges')
+      .addToUi();
+}
+
+// #endregion
+
+// =================================================================
+// #region 2. SCRIPT ENTRY POINTS (USER-TRIGGERED ACTIONS)
+// =================================================================
+
+/**
+ * @description Listens for any single edit on the sheet. Provides simple visual feedback
+ * for checkbox interactions in the "Untagged Meetings" sheet.
+ * @param {Object} e The event object passed by the onEdit trigger.
+ */
+function handleEdit(e) {
+  // We pass 'true' to indicate this is a single, interactive edit, not a batch process.
+  updateMeetingTag(e, true); 
+}
+
+/**
+ * @description Runs when the user clicks "Apply Changes to Calendar" from the menu.
+ * This function initiates the powerful and optimized batch update process.
+ */
+function applyBatchChanges() {
+  // We pass 'false' to indicate this is a batch process triggered from the menu.
+  updateMeetingTag(null, false); 
+}
+
+/**
+ * @description Runs when the user clicks "Save/Run Config". It refreshes the meeting list
+ * and updates the automated refresh triggers based on the settings in the "Config" sheet.
+ */
+function saveConfigAndRun() {
+  try {
+    // First, run the main function to refresh the data immediately.
+    findEventsMissingTag();
+    
+    // Get the spreadsheet file to associate the triggers with.
+    const file = SpreadsheetApp.getActiveSpreadsheet();
+    // Get all existing triggers for this project.
+    const triggers = ScriptApp.getProjectTriggers();
+    const configs = _getAllConfigs();
+    const minutes = parseInt(configs.MinutesInterval, 10);
+
+    // Clean up any old triggers to prevent duplicates.
+    triggers.forEach(trigger => {
+      const handler = trigger.getHandlerFunction();
+      if (handler === 'findEventsMissingTag') {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+
+    // If a valid interval is set, create a new time-based trigger.
+    if (minutes > 0) {
+      ScriptApp.newTrigger('findEventsMissingTag').timeBased().everyMinutes(minutes).create();
+    }
+    // Always create a trigger to refresh when the spreadsheet is opened.
+    ScriptApp.newTrigger('findEventsMissingTag').forSpreadsheet(file).onOpen().create();
+    
+    SpreadsheetApp.getActiveSpreadsheet().toast("Configuration saved and list refreshed.");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(e.message);
+  }
+}
+
+// #endregion
+
+// =================================================================
+// #region 3. CORE LOGIC FUNCTIONS (THE "BRAINS")
+// =================================================================
+
+/**
+ * @description The main data-gathering function. Reads the calendar based on "Config" sheet
+ * settings and populates the "Untagged Meetings" sheet.
+ */
+function findEventsMissingTag() {
+    const file = SpreadsheetApp.getActiveSpreadsheet();
+    try {
+        // --- 1. Read all configurations once for efficiency ---
+        const configs = _getAllConfigs();
+        const tagsSheet = file.getSheetByName("Tags");
+        const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+        const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]]));
+        
+        // --- 2. Calculate the precise date range (using whole days) ---
+        const start = new Date();
+        start.setHours(0, 0, 0, 0); // Zero out the time
+        start.setDate(start.getDate() - configs.DaysBack);
+
+        const end = new Date();
+        end.setHours(23, 59, 59, 999); // Set to the last millisecond
+        end.setDate(end.getDate() + configs.DaysAhead);
+        
+        // --- 3. Fetch all calendar events in the range in a single API call ---
+        const calendarId = CalendarApp.getDefaultCalendar().getId();
+        const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime' });
+        const events = response.items || [];
+        
+        const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
+
+        // --- 4. Process each event in memory ---
+        for (const event of events) {
+            // Filter 1: Skip all-day events, as they lack specific times.
+            if (event.start.date) { continue; }
+
+            if (!event.summary) continue;
+            
+            // Filter 2: Ignore events based on title phrases from config.
+            const title = event.summary;
+            if (configs.IgnoreExactTitles.includes(title) || configs.IgnorePhrases.some(p => title.includes(p))) continue;
+            
+            // Filter 3: Conditionally ignore events created by group calendars.
+            const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
+            if (configs.ExternalAttendees === false && organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) {
+              continue;
+            }
+
+            // --- Attendee Analysis ---
+            const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
+            const allParticipants = [...new Set([organizerEmail, ...attendees])];
+            const isInternal = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com") || email.toLowerCase().endsWith("@group.calendar.google.com"));
+            const isPurelyInternal = allParticipants.length > 0 && allParticipants.every(isInternal);
+            
+            // Filter 4: The main external/internal filter.
+            if (configs.ExternalAttendees && isPurelyInternal) { continue; }
+            
+            // Filter 5: Ignore events based on organizer/attendee emails from config.
+            if (configs.IgnoreFromEmails.includes(organizerEmail) || attendees.some(a => configs.IgnoreToEmails.includes(a))) continue;
+            
+            // --- Tag Parsing and Sorting ---
+            let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
+            const hasMainTag = description.includes(configs.tagPrefix);
+            const hasSETagInDescription = hasMainTag && description.includes("(SE)");
+            let isSeLead = configs.SELeadTagText ? description.includes(configs.SELeadTagText) : false;
+            let isInPerson = false;
+            let fullTagName = "";
+
+            if (hasMainTag) {
+                const lines = description.split('\n');
+                const tagLine = lines.find(line => line.trim().startsWith(configs.tagPrefix));
+                if (tagLine) {
+                    let abbreviatedTag = tagLine.trim().substring(configs.tagPrefix.length).trim();
+                    if (configs.InPersonModifier && abbreviatedTag.includes(configs.InPersonModifier)) isInPerson = true;
+                    let lookupKey = abbreviatedTag.replace(configs.InPersonModifier, "").replace(";", "").trim();
+                    fullTagName = tagMap.get(lookupKey) || "";
+                }
+            }
+            
+            const eventStartTime = new Date(event.start.dateTime || event.start.date);
+            const hasExternalAttendee = !isPurelyInternal;
+            const rowData = [title, eventStartTime, organizerEmail, hasExternalAttendee, isSeLead, isInPerson, fullTagName];
+            
+            // Sort meetings into buckets based on their tag status and config settings.
+            if (configs.SETagMode) {
+                if (hasSETagInDescription) { if (configs.ShowTaggedMeetings) fullyTaggedMeetings.push(rowData); } 
+                else if (hasMainTag) { aeTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            } else {
+                if (hasMainTag) { if (configs.ShowTaggedMeetings) fullyTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            }
+        }
+        
+        // --- 5. Write all results to the sheet in a single operation ---
+        const sheet = file.getSheets()[0];
+        sheet.clear();
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting"];
+        sheet.appendRow(headers);
+        const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
+        
+        if (finalList.length > 0) {
+            sheet.getRange(2, 1, finalList.length, headers.length).setValues(finalList);
+        } else {
+            sheet.getRange("A2").setValue("No meetings found using your current criteria.");
+        }
+        
+        // --- 6. Apply formatting ---
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs);
+        
+    } catch (e) {
+        SpreadsheetApp.getUi().alert(e.message);
+    }
+}
+
+/**
+ * @description The main worker function that handles all updates to the calendar.
+ * It is optimized to make a minimal number of API calls for maximum performance.
+ * @param {Object} e The event object from an onEdit trigger, or null for batch mode.
+ * @param {boolean} isSingleEditMode True if triggered by a single cell edit, false for batch mode.
+ */
+function updateMeetingTag(e, isSingleEditMode) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  try {
+    // Mode 1: Single Edit. Provides simple, fast visual feedback (coloring cells).
+    if (isSingleEditMode) {
+      const range = e.range;
+      if (range.getRow() <= 1) return;
+      const editedCol = range.getColumn();
+      if (editedCol === 5 || editedCol === 6) {
+        if (e.value === "TRUE") range.setBackground('#d9ead3');
+        else range.setBackground('#ffffff');
+      }
+      return; 
+    }
+
+    // Mode 2: Batch Processing. Efficiently updates many calendar events.
+    ss.toast("Processing batch... Please wait.");
+    
+    // --- 1. Read all configurations and data from the sheet ONCE ---
+    const configs = _getAllConfigs();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) { ss.toast("No data to process."); return; }
+    
+    const tagsSheet = ss.getSheetByName("Tags");
+    const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]]));
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+    const calendarId = CalendarApp.getDefaultCalendar().getId();
+    
+    // --- 2. PERFORMANCE OPTIMIZATION: Fetch all relevant calendar events in ONE API call ---
+    // First, find the min/max date range from the events listed on the sheet.
+    const eventTimes = sheetData.map(row => new Date(row[1]).getTime());
+    const minTime = new Date(Math.min(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
+    maxTime.setHours(23, 59, 59); // Ensure we get events from the whole last day.
+
+    // Then, fetch all events in that range.
+    const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true });
+    
+    // Create a fast lookup map for these events. The key is a unique combination of title and time.
+    const eventMap = new Map();
+    if (response.items) {
+        response.items.forEach(event => {
+            const startTime = new Date(event.start.dateTime || event.start.date).getTime();
+            const key = `${event.summary}_${startTime}`;
+            eventMap.set(key, event);
+        });
+    }
+
+    // --- 3. Process each row from the sheet using the in-memory event map ---
+    const rowsToDelete = [];
+    let updatedCount = 0;
+    
+    for (let i = 0; i < sheetData.length; i++) {
+      const rowData = sheetData[i];
+      const mainTagValue = rowData[6]; // Column G
+
+      // Only process rows where a tag has been selected from the dropdown.
+      if (mainTagValue) {
+        const title = rowData[0];
+        const startTime = new Date(rowData[1]).getTime();
+        const lookupKey = `${title}_${startTime}`;
+        
+        // Find the event using the ultra-fast map lookup (NO API call here).
+        const eventToUpdate = eventMap.get(lookupKey);
+
+        if (eventToUpdate) {
+          const isSeLeadChecked = rowData[4];
+          const isInPersonChecked = rowData[5];
+          let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+
+          // --- Description Rebuilding Logic ---
+          // A. Handle SE Lead tag (Remove/Add).
+          const seLeadRegex = new RegExp(`\\s*` + configs.SELeadTagText.trim() + `\\s*`, 'gi');
+          description = description.replace(seLeadRegex, '').trim();
+          if (isSeLeadChecked) {
+            description += "\n" + configs.SELeadTagText;
+          }
+
+          // B. "Nuke and Rebuild" the main meeting tag to prevent duplicates.
+          const aggressiveRemovalRegex = new RegExp(configs.tagPrefix + ".*", "g");
+          description = description.replace(aggressiveRemovalRegex, '');
+          description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
+
+          let abbreviatedTag = tagMap.get(mainTagValue);
+          
+          if (isInPersonChecked && abbreviatedTag) {
+            let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+            if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+            let coreTag = abbreviatedTag.replace(';', '').trim();
+            abbreviatedTag = `${coreTag}${configs.InPersonModifier}${suffix};`;
+          }
+          
+          const finalTagString = configs.tagPrefix + abbreviatedTag;
+          description += "\n\n" + finalTagString;
+          
+          // --- 4. Update the event on Google Calendar ---
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          rowsToDelete.push(i + 2);
+          updatedCount++;
+        }
+      }
+    }
+
+    // --- 5. Clean up the sheet ---
+    if (updatedCount > 0) {
+      // Delete updated rows in reverse order to avoid shifting indices.
+      rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
+    } else {
+      ss.toast("No meetings were selected for an update (ensure a tag is chosen in the dropdown).");
+    }
+
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(err.message);
+  }
+}
+
+// #endregion
+
+// =================================================================
+// #region 4. HELPER & UTILITY FUNCTIONS
+// =================================================================
+
+/**
+ * @description A centralized, efficient function to read all settings from the "Config" sheet ONCE.
+ * @returns {Object} A configuration object with key-value pairs for all settings.
+ */
+function _getAllConfigs() {
+    const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+    if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
+    
+    // Read the entire config table in one go.
+    const data = configSheet.getRange("A1:B" + configSheet.getLastRow()).getValues();
+    
+    // Convert the 2D array into a simple key-value object.
+    const configs = {};
+    for (const row of data) {
+        const key = row[0];
+        const value = row[1];
+        if (key) {
+            // Create a camelCase key for easy access (e.g., "Days Back" becomes "DaysBack").
+            const camelCaseKey = key.replace(/\s(.)/g, function(match, group1) { return group1.toUpperCase(); }).replace(/\s/g, '');
+            configs[camelCaseKey] = value;
+        }
+    }
+    
+    // Pre-process list-based configs for immediate use.
+    configs.IgnorePhrases = (configs.ignorePhrases || "").split(",").map(s => s.trim()).filter(Boolean);
+    configs.IgnoreExactTitles = (configs.ignoreExactTitles || "").split(",").map(s => s.trim()).filter(Boolean);
+    configs.IgnoreFromEmails = (configs.ignoreFromEmails || "").split(",").map(s => s.trim()).filter(Boolean);
+    configs.IgnoreToEmails = (configs.ignoreToEmails || "").split(",").map(s => s.trim()).filter(Boolean);
+    
+    // Convert boolean-like strings to true booleans for reliable checks.
+    configs.ExternalAttendees = (configs.externalAttendees || "false").toString().toLowerCase() === "true";
+    configs.SETagMode = (configs.sETagMode || "false").toString().toLowerCase() === "true";
+    configs.ShowTaggedMeetings = (configs.showTaggedMeetings || "false").toString().toLowerCase() === "true";
+    
+    // Standardize the main tag prefix.
+    configs.tagPrefix = "Verkada Meeting Tag: ";
+    
+    return configs;
+}
+
+/**
+ * @description A helper function that applies all formatting to the "Untagged Meetings" sheet after data is written.
+ * @param {Sheet} sheet The sheet object to format.
+ * @param {Array<string>} headers The list of header titles.
+ * @param {Array<Array>} noTagMeetings The data for meetings with no tags.
+ * @param {Array<Array>} aeTaggedMeetings The data for meetings with AE tags.
+ * @param {Array<Array>} fullyTaggedMeetings The data for meetings with SE tags.
+ * @param {Object} configs The centralized configuration object.
+ */
+function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+        sheet.getRange(2, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
+        sheet.getRange(2, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
+        
+        // Format "External Attendees" column with green/red background.
+        const extRange = sheet.getRange(2, 4, lastRow - 1, 1);
+        const extValues = extRange.getValues();
+        const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']);
+        extRange.setBackgrounds(extColors);
+    }
+    
+    sheet.getRange("H1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
+
+    // --- Conditional Row Coloring Logic ---
+    const startRow = 2;
+    // Condition 1: Standard coloring for SE Tag Mode.
+    if (configs.SETagMode) {
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); // Red
+        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc'); // Yellow
+    } 
+    // Condition 2: Special coloring for the specific flag combination.
+    else if (!configs.SETagMode && configs.ShowTaggedMeetings && configs.ExternalAttendees) {
+        if (noTagMeetings.length > 0) {
+            sheet.getRange(startRow, 1, noTagMeetings.length, headers.length).setBackground('#f4cccc'); // Red
+        }
+    }
+
+    // Apply strikethrough to fully tagged meetings, which are always at the end.
+    if (fullyTaggedMeetings.length > 0) {
+        const offset = noTagMeetings.length + aeTaggedMeetings.length;
+        sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
+    }
+}
+
+// #endregion
