@@ -1,8 +1,8 @@
 /**
- * @file Meeting Tagger Tool v6.2
- * @description This version contains a critical fix to the 'ExternalAttendees' filter logic
- * to correctly identify and filter purely internal meetings.
- * @version 6.2.0
+ * @file Meeting Tagger Tool v6.3
+ * @description This version contains a critical bug fix in the updateMeetingTag function,
+ * reverting the 'tagPrefix' to its stable, hard-coded value to fix an error on checkbox edits.
+ * @version 6.3.0
  */
 
 // =================================================================
@@ -60,8 +60,7 @@ function saveConfigAndRun() {
 // =================================================================
 
 /**
- * @description The main data-gathering function.
- * This version has the corrected logic for the 'ExternalAttendees' filter.
+ * @description The main data-gathering function. (Stable from v6.2)
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -98,7 +97,7 @@ function findEventsMissingTag() {
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
         for (const event of events) {
-            if (event.start.date) { continue; } // Correctly skips all-day events
+            if (event.start.date) { continue; }
             if (!event.summary) continue;
             
             const title = event.summary;
@@ -112,8 +111,6 @@ function findEventsMissingTag() {
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
             
-            // --- THIS IS THE FIX (v6.2) ---
-            // 1. Define what an "internal entity" is (your company, resources, groups).
             const isInternalEntity = email => {
                 if (!email) return false;
                 const lowerCaseEmail = email.toLowerCase();
@@ -122,11 +119,8 @@ function findEventsMissingTag() {
                        lowerCaseEmail.endsWith("@group.calendar.google.com");
             };
 
-            // 2. The meeting is "purely internal" if it has ZERO participants who are NOT internal entities.
             const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
-            // --- END OF FIX ---
 
-            // This is the original, working filter logic which now works correctly with the right input.
             if (externalFilter && isPurelyInternal) { continue; }
             
             if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
@@ -183,7 +177,9 @@ function findEventsMissingTag() {
 }
 
 /**
- * @description The main worker function that updates the calendar. (Optimized v6.0)
+ * @description The main worker function that updates the calendar. (Optimized v6.0 + Bug Fix)
+ * WHY THE CHANGE: Reverted the 'tagPrefix' variable to its original, hard-coded value to fix
+ * a bug that caused an error when editing checkboxes.
  */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -202,7 +198,11 @@ function updateMeetingTag(e, isSingleEditMode) {
 
     ss.toast("Processing batch... Please wait.");
     
-    const tagPrefix = getConfig("tagPrefix") || "Verkada Meeting Tag: "; // Added fallback
+    // --- THIS IS THE FIX (v6.3) ---
+    // The tag prefix is reliably hard-coded, as it was in the original stable versions.
+    const tagPrefix = "Verkada Meeting Tag: ";
+    // --- END OF FIX ---
+    
     const seLeadTag = getConfig("SELeadTagText");
     const modifier = getConfig("InPersonModifier");
     const lastRow = sheet.getLastRow();
@@ -216,7 +216,7 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime());
     const minTime = new Date(Math.min(...eventTimes));
-    const maxTime = new Date(Math.max(...eventTimes));
+    const maxTime = a new Date(Math.max(...eventTimes));
     maxTime.setHours(23, 59, 59);
 
     const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true });
@@ -295,9 +295,6 @@ function updateMeetingTag(e, isSingleEditMode) {
 // #region 4. HELPER & UTILITY FUNCTIONS
 // =================================================================
 
-/**
- * @description A helper that gets a single config value.
- */
 function getConfig(label) {
   const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
   if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
@@ -306,9 +303,6 @@ function getConfig(label) {
   return configSheet.getRange(finder.getRow(), 2).getValue();
 }
 
-/**
- * @description A helper that applies formatting to the "Untagged Meetings" sheet.
- */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
