@@ -142,14 +142,14 @@ function updateMeetingTag(e, isSingleEditMode) {
 }
 
 // =================================================================
-// =========== "TO-DO LIST" CREATOR (FINAL CORRECTED v5.4) ============
+// =========== "TO-DO LIST" CREATOR (FINAL CORRECTED v5.5) ============
 // =================================================================
 /**
  * WHAT IT DOES: Reads your calendar and populates the "Untagged Meetings" sheet.
  * WHY THE CHANGE:
- * 1. All-day events are now explicitly filtered out to prevent date range errors.
- * 2. The definition of an "internal" attendee is now stricter to exclude resource/group calendars.
- * 3. The date logic remains corrected to use whole days.
+ * 1. The list of participants is now filtered to remove group calendar emails before
+ * the "purely internal" check is performed. This correctly handles your filter requirements.
+ * 2. Date and all-day event logic remains corrected from v5.3.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -183,11 +183,7 @@ function findEventsMissingTag() {
         const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime' });
         const events = response.items;
         for (const event of events) {
-            // --- FIX #1: Filter out all-day events ---
-            // All-day events have a 'date' property instead of 'dateTime'. We skip them.
-            if (event.start.date) {
-                continue;
-            }
+            if (event.start.date) continue; // Skip all-day events
 
             if (!event.summary) continue;
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
@@ -196,13 +192,17 @@ function findEventsMissingTag() {
             
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
-            const allParticipants = [...new Set([organizerEmail, ...attendees])];
+            let allParticipants = [...new Set([organizerEmail, ...attendees])];
             
-            // --- FIX #2: Stricter definition of an internal participant ---
-            // We only consider emails ending in "@verkada.com" to be internal humans.
-            const isInternal = email => email && email.toLowerCase().endsWith("@verkada.com");
+            // --- THIS IS THE FIX ---
+            // Filter out group calendar emails from the participant list before analysis.
+            const filteredParticipants = allParticipants.filter(email => !email.toLowerCase().endsWith("@group.calendar.google.com"));
+            // --- END OF FIX ---
 
-            const isPurelyInternal = allParticipants.length > 0 && allParticipants.every(isInternal);
+            const isInternal = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com"));
+            
+            // Perform the "purely internal" check on the CLEANED list of participants.
+            const isPurelyInternal = filteredParticipants.length > 0 && filteredParticipants.every(isInternal);
             if (externalFilter && isPurelyInternal) { continue; }
             
             const hasExternalAttendee = !isPurelyInternal;
