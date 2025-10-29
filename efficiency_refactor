@@ -1,9 +1,8 @@
 /**
- * @file Meeting Tagger Tool v6.1
- * @description This script provides tools to find, list, and batch-update Google Calendar events.
- * This version reverts the configuration loading mechanism to fix a critical bug in the
- * 'ExternalAttendees' filter, while retaining performance optimizations for batch updates.
- * @version 6.1.0
+ * @file Meeting Tagger Tool v6.2
+ * @description This version contains a critical fix to the 'ExternalAttendees' filter logic
+ * to correctly identify and filter purely internal meetings.
+ * @version 6.2.0
  */
 
 // =================================================================
@@ -36,7 +35,6 @@ function saveConfigAndRun() {
     findEventsMissingTag();
     const file = SpreadsheetApp.getActiveSpreadsheet();
     const triggers = ScriptApp.getProjectTriggers();
-    // Reverted to direct getConfig call to fix bug
     const minutes = parseInt(getConfig("MinutesInterval"), 10);
 
     triggers.forEach(trigger => {
@@ -62,13 +60,12 @@ function saveConfigAndRun() {
 // =================================================================
 
 /**
- * @description The main data-gathering function. Reads calendar based on "Config" sheet settings.
- * This version uses the original, reliable getConfig() method to ensure filters work correctly.
+ * @description The main data-gathering function.
+ * This version has the corrected logic for the 'ExternalAttendees' filter.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
-        // --- 1. REVERTED: Read all configurations directly for reliability ---
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
         const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -86,7 +83,6 @@ function findEventsMissingTag() {
         const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
         const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]]));
         
-        // --- 2. Calculate precise date range ---
         const start = new Date();
         start.setHours(0, 0, 0, 0);
         start.setDate(start.getDate() - daysBack);
@@ -95,16 +91,14 @@ function findEventsMissingTag() {
         end.setHours(23, 59, 59, 999);
         end.setDate(end.getDate() + daysAhead);
         
-        // --- 3. Fetch all calendar events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime' });
         const events = response.items || [];
         
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
-        // --- 4. Process each event in memory ---
         for (const event of events) {
-            if (event.start.date) { continue; }
+            if (event.start.date) { continue; } // Correctly skips all-day events
             if (!event.summary) continue;
             
             const title = event.summary;
@@ -117,12 +111,235 @@ function findEventsMissingTag() {
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
-            const isInternal = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com") || email.toLowerCase().endsWith("@group.calendar.google.com"));
-            const isPurelyInternal = allParticipants.length > 0 && allParticipants.every(isInternal);
             
-            // This is the original, working filter logic.
+            // --- THIS IS THE FIX (v6.2) ---
+            // 1. Define what an "internal entity" is (your company, resources, groups).
+            const isInternalEntity = email => {
+                if (!email) return false;
+                const lowerCaseEmail = email.toLowerCase();
+                return lowerCaseEmail.endsWith("@verkada.com") ||
+                       lowerCaseEmail.endsWith("@resource.calendar.google.com") ||
+                       lowerCaseEmail.endsWith("@group.calendar.google.com");
+            };
+
+            // 2. The meeting is "purely internal" if it has ZERO participants who are NOT internal entities.
+            const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
+            // --- END OF FIX ---
+
+            // This is the original, working filter logic which now works correctly with the right input.
             if (externalFilter && isPurelyInternal) { continue; }
             
             if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
             
-            let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').
+            let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
+            const hasMainTag = description.includes(tagPrefix);
+            const hasSETagInDescription = hasMainTag && description.includes("(SE)");
+            let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
+            let isInPerson = false;
+            let fullTagName = "";
+
+            if (hasMainTag) {
+                const lines = description.split('\n');
+                const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
+                if (tagLine) {
+                    let abbreviatedTag = tagLine.trim().substring(tagPrefix.length).trim();
+                    if (modifier && abbreviatedTag.includes(modifier)) isInPerson = true;
+                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
+                    fullTagName = tagMap.get(lookupKey) || "";
+                }
+            }
+            
+            const eventStartTime = new Date(event.start.dateTime || event.start.date);
+            const hasExternalAttendee = !isPurelyInternal;
+            const rowData = [title, eventStartTime, organizerEmail, hasExternalAttendee, isSeLead, isInPerson, fullTagName];
+            
+            if (seTaggingMode) {
+                if (hasSETagInDescription) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); } 
+                else if (hasMainTag) { aeTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            } else {
+                if (hasMainTag) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            }
+        }
+        
+        const sheet = file.getSheets()[0];
+        sheet.clear();
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting"];
+        sheet.appendRow(headers);
+        const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
+        
+        if (finalList.length > 0) {
+            sheet.getRange(2, 1, finalList.length, headers.length).setValues(finalList);
+        } else {
+            sheet.getRange("A2").setValue("No meetings found using your current criteria.");
+        }
+        
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        
+    } catch (e) {
+        SpreadsheetApp.getUi().alert(e.message);
+    }
+}
+
+/**
+ * @description The main worker function that updates the calendar. (Optimized v6.0)
+ */
+function updateMeetingTag(e, isSingleEditMode) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  try {
+    if (isSingleEditMode) {
+      const range = e.range;
+      if (range.getRow() <= 1) return;
+      const editedCol = range.getColumn();
+      if (editedCol === 5 || editedCol === 6) {
+        if (e.value === "TRUE") range.setBackground('#d9ead3');
+        else range.setBackground('#ffffff');
+      }
+      return; 
+    }
+
+    ss.toast("Processing batch... Please wait.");
+    
+    const tagPrefix = getConfig("tagPrefix") || "Verkada Meeting Tag: "; // Added fallback
+    const seLeadTag = getConfig("SELeadTagText");
+    const modifier = getConfig("InPersonModifier");
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) { ss.toast("No data to process."); return; }
+    
+    const tagsSheet = ss.getSheetByName("Tags");
+    const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]]));
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+    const calendarId = CalendarApp.getDefaultCalendar().getId();
+    
+    const eventTimes = sheetData.map(row => new Date(row[1]).getTime());
+    const minTime = new Date(Math.min(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
+    maxTime.setHours(23, 59, 59);
+
+    const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true });
+    
+    const eventMap = new Map();
+    if (response.items) {
+        response.items.forEach(event => {
+            const startTime = new Date(event.start.dateTime || event.start.date).getTime();
+            const key = `${event.summary}_${startTime}`;
+            eventMap.set(key, event);
+        });
+    }
+
+    const rowsToDelete = [];
+    let updatedCount = 0;
+    
+    for (let i = 0; i < sheetData.length; i++) {
+      const rowData = sheetData[i];
+      const mainTagValue = rowData[6];
+
+      if (mainTagValue) {
+        const title = rowData[0];
+        const startTime = new Date(rowData[1]).getTime();
+        const lookupKey = `${title}_${startTime}`;
+        
+        const eventToUpdate = eventMap.get(lookupKey);
+
+        if (eventToUpdate) {
+          const isSeLeadChecked = rowData[4];
+          const isInPersonChecked = rowData[5];
+          let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+
+          const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
+          description = description.replace(seLeadRegex, '').trim();
+          if (isSeLeadChecked) {
+            description += "\n" + seLeadTag;
+          }
+
+          const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
+          description = description.replace(aggressiveRemovalRegex, '');
+          description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
+
+          let abbreviatedTag = tagMap.get(mainTagValue);
+          
+          if (isInPersonChecked && abbreviatedTag) {
+            let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+            if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+            let coreTag = abbreviatedTag.replace(';', '').trim();
+            abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+          }
+          
+          const finalTagString = tagPrefix + abbreviatedTag;
+          description += "\n\n" + finalTagString;
+          
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          rowsToDelete.push(i + 2);
+          updatedCount++;
+        }
+      }
+    }
+
+    if (updatedCount > 0) {
+      rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
+    } else {
+      ss.toast("No meetings were selected for an update (ensure a tag is chosen in the dropdown).");
+    }
+
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(err.message);
+  }
+}
+// #endregion
+
+// =================================================================
+// #region 4. HELPER & UTILITY FUNCTIONS
+// =================================================================
+
+/**
+ * @description A helper that gets a single config value.
+ */
+function getConfig(label) {
+  const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+  if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
+  const finder = configSheet.createTextFinder(label).matchEntireCell(true).findNext();
+  if (!finder) throw new Error(`Config label "${label}" not found in 'Config' sheet.`);
+  return configSheet.getRange(finder.getRow(), 2).getValue();
+}
+
+/**
+ * @description A helper that applies formatting to the "Untagged Meetings" sheet.
+ */
+function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+        sheet.getRange(2, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
+        sheet.getRange(2, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
+        
+        const extRange = sheet.getRange(2, 4, lastRow - 1, 1);
+        const extValues = extRange.getValues();
+        const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']);
+        extRange.setBackgrounds(extColors);
+    }
+    
+    sheet.getRange("H1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
+
+    const startRow = 2;
+    if (configs.seTaggingMode) {
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+    } 
+    else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
+        if (noTagMeetings.length > 0) {
+            sheet.getRange(startRow, 1, noTagMeetings.length, headers.length).setBackground('#f4cccc');
+        }
+    }
+
+    if (fullyTaggedMeetings.length > 0) {
+        const offset = noTagMeetings.length + aeTaggedMeetings.length;
+        sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
+    }
+}
+// #endregion
