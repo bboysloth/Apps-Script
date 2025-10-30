@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v6.5
- * @description This version adds SpreadsheetApp.flush() to the saveConfigAndRun function.
- * This fixes a critical synchronization bug where running the script from a button on the
- * sheet would fail to read the most recently updated configuration values.
- * @version 6.5.0
+ * @file Meeting Tagger Tool v6.6
+ * @description This version contains a critical fix in the updateMeetingTag function. It now
+ * intelligently clears the sheet content when all rows are updated, preventing the
+ * "cannot delete all non-frozen rows" error.
+ * @version 6.6.0
  */
 
 // =================================================================
@@ -31,18 +31,9 @@ function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
 
-/**
- * @description Runs when "Save/Run Config" is triggered. Includes a flush() command
- * to ensure all sheet edits are saved before the script reads config values.
- */
 function saveConfigAndRun() {
   try {
-    // --- THIS IS THE FIX (v6.5) ---
-    // Force the spreadsheet to apply all pending changes immediately. This prevents a "race condition"
-    // where the script runs before the user's latest edits to the Config sheet are saved.
     SpreadsheetApp.flush();
-    // --- END OF FIX ---
-
     findEventsMissingTag();
     const file = SpreadsheetApp.getActiveSpreadsheet();
     const triggers = ScriptApp.getProjectTriggers();
@@ -277,12 +268,23 @@ function updateMeetingTag(e, isSingleEditMode) {
       }
     }
 
+    // --- THIS IS THE FIX (v6.6) ---
+    // First, check if any rows were actually updated.
     if (updatedCount > 0) {
-      rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      const numDataRows = lastRow - 1;
+      // If the number of updated rows is the same as the total number of rows...
+      if (updatedCount === numDataRows) {
+        // ...then it's faster and safer to clear the content of the data range.
+        sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).clearContent();
+      } else {
+        // Otherwise, use the original method to delete specific rows one-by-one.
+        rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      }
       ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
     } else {
       ss.toast("No meetings were selected for an update (ensure a tag is chosen in the dropdown).");
     }
+    // --- END OF FIX ---
 
   } catch (err) {
     SpreadsheetApp.getUi().alert(err.message);
