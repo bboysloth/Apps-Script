@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v6.6
- * @description This version contains a critical fix in the updateMeetingTag function. It now
- * intelligently clears the sheet content when all rows are updated, preventing the
- * "cannot delete all non-frozen rows" error.
- * @version 6.6.0
+ * @file Meeting Tagger Tool v6.7
+ * @description High-Performance Update. This version implements a "check before updating" mechanism.
+ * It stores the original state of meetings in hidden columns and only performs calendar updates
+ * on rows that have actually been changed, dramatically improving performance and preventing timeouts.
+ * @version 6.7.0
  */
 
 // =================================================================
@@ -61,6 +61,11 @@ function saveConfigAndRun() {
 // #region 3. CORE LOGIC FUNCTIONS (THE "BRAINS")
 // =================================================================
 
+/**
+ * @description Reads the calendar and populates the "Untagged Meetings" sheet.
+ * WHY THE CHANGE: Now includes three new hidden helper columns (I, J, K) to store
+ * the original state of the editable fields for later comparison.
+ */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
@@ -144,7 +149,14 @@ function findEventsMissingTag() {
             
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
             const hasExternalAttendee = !isPurelyInternal;
-            const rowData = [title, eventStartTime, organizerEmail, hasExternalAttendee, isSeLead, isInPerson, fullTagName];
+            
+            // The row data now includes the original state for later comparison.
+            const rowData = [
+                title, eventStartTime, organizerEmail, hasExternalAttendee, 
+                isSeLead, isInPerson, fullTagName, 
+                '', // Placeholder for column H
+                isSeLead, isInPerson, fullTagName // Original state stored in I, J, K
+            ];
             
             if (seTaggingMode) {
                 if (hasSETagInDescription) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); } 
@@ -158,7 +170,12 @@ function findEventsMissingTag() {
         
         const sheet = file.getSheets()[0];
         sheet.clear();
-        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting"];
+        const headers = [
+            "Title", "Start Time", "Created By", "External Attendees", 
+            "SE Lead", "In Person", "Add Tag to Meeting",
+            "Last Refreshed", // Moved header to its proper place
+            "Original SE Lead", "Original In Person", "Original Tag" // New hidden headers
+        ];
         sheet.appendRow(headers);
         const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
         
@@ -175,6 +192,12 @@ function findEventsMissingTag() {
     }
 }
 
+/**
+ * @description The main worker function that updates the calendar.
+ * WHY THE CHANGE: Now reads hidden columns to compare the current state with the
+ * original state. It only performs an expensive API update call if a change
+ * has actually been made to a row, dramatically improving performance.
+ */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
@@ -183,7 +206,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       const range = e.range;
       if (range.getRow() <= 1) return;
       const editedCol = range.getColumn();
-      if (editedCol === 5 || editedCol === 6) {
+      if (editedCol === 5 || editedCol === 6) { // Columns E or F
         if (e.value === "TRUE") range.setBackground('#d9ead3');
         else range.setBackground('#ffffff');
       }
@@ -201,7 +224,8 @@ function updateMeetingTag(e, isSingleEditMode) {
     const tagsSheet = ss.getSheetByName("Tags");
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
     const tagMap = new Map(tagsData.map(row => [row[0], row[1]]));
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 7).getValues();
+    // Read all data including the new hidden columns (A to K is 11 columns).
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime());
@@ -225,9 +249,21 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      const mainTagValue = rowData[6];
+      
+      // --- PERFORMANCE OPTIMIZATION: Check for changes before processing ---
+      const currentSeLead = rowData[4];      // Col E
+      const currentInPerson = rowData[5];    // Col F
+      const currentTag = rowData[6];         // Col G
+      const originalSeLead = rowData[8];     // Col I (hidden)
+      const originalInPerson = rowData[9];   // Col J (hidden)
+      const originalTag = rowData[10];       // Col K (hidden)
 
-      if (mainTagValue) {
+      const hasChanged = (currentSeLead !== originalSeLead) || 
+                         (currentInPerson !== originalInPerson) || 
+                         (currentTag !== originalTag);
+
+      // Only proceed if a change was detected OR if no tag was selected originally (newly tagged row).
+      if (hasChanged && currentTag) {
         const title = rowData[0];
         const startTime = new Date(rowData[1]).getTime();
         const lookupKey = `${title}_${startTime}`;
@@ -235,13 +271,11 @@ function updateMeetingTag(e, isSingleEditMode) {
         const eventToUpdate = eventMap.get(lookupKey);
 
         if (eventToUpdate) {
-          const isSeLeadChecked = rowData[4];
-          const isInPersonChecked = rowData[5];
           let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
 
           const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
           description = description.replace(seLeadRegex, '').trim();
-          if (isSeLeadChecked) {
+          if (currentSeLead) {
             description += "\n" + seLeadTag;
           }
 
@@ -249,9 +283,9 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          let abbreviatedTag = tagMap.get(mainTagValue);
+          let abbreviatedTag = tagMap.get(currentTag);
           
-          if (isInPersonChecked && abbreviatedTag) {
+          if (currentInPerson && abbreviatedTag) {
             let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
             if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
             let coreTag = abbreviatedTag.replace(';', '').trim();
@@ -268,23 +302,17 @@ function updateMeetingTag(e, isSingleEditMode) {
       }
     }
 
-    // --- THIS IS THE FIX (v6.6) ---
-    // First, check if any rows were actually updated.
     if (updatedCount > 0) {
       const numDataRows = lastRow - 1;
-      // If the number of updated rows is the same as the total number of rows...
-      if (updatedCount === numDataRows) {
-        // ...then it's faster and safer to clear the content of the data range.
+      if (updatedCount === numDataRows && rowsToDelete.length === numDataRows) {
         sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).clearContent();
       } else {
-        // Otherwise, use the original method to delete specific rows one-by-one.
         rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
       }
       ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
     } else {
-      ss.toast("No meetings were selected for an update (ensure a tag is chosen in the dropdown).");
+      ss.toast("No changes were detected to apply.");
     }
-    // --- END OF FIX ---
 
   } catch (err) {
     SpreadsheetApp.getUi().alert(err.message);
@@ -304,6 +332,10 @@ function getConfig(label) {
   return configSheet.getRange(finder.getRow(), 2).getValue();
 }
 
+/**
+ * @description A helper that applies formatting to the "Untagged Meetings" sheet.
+ * WHY THE CHANGE: Now hides the new helper columns (I, J, K) from view.
+ */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
@@ -319,7 +351,11 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         extRange.setBackgrounds(extColors);
     }
     
-    sheet.getRange("H1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
+    // Set the "Last Refreshed" timestamp in its specific column (H).
+    sheet.getRange("H2").setValue(new Date().toLocaleString());
+
+    // --- Hide the new helper columns used for state tracking ---
+    sheet.hideColumns(9, 3); // Hide columns I, J, and K.
 
     const startRow = 2;
     if (configs.seTaggingMode) {
