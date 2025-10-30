@@ -1,8 +1,9 @@
 /**
- * @file Meeting Tagger Tool v6.3
- * @description This version contains a critical bug fix in the updateMeetingTag function,
- * reverting the 'tagPrefix' to its stable, hard-coded value to fix an error on checkbox edits.
- * @version 6.3.0
+ * @file Meeting Tagger Tool v6.5
+ * @description This version adds SpreadsheetApp.flush() to the saveConfigAndRun function.
+ * This fixes a critical synchronization bug where running the script from a button on the
+ * sheet would fail to read the most recently updated configuration values.
+ * @version 6.5.0
  */
 
 // =================================================================
@@ -30,8 +31,18 @@ function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
 
+/**
+ * @description Runs when "Save/Run Config" is triggered. Includes a flush() command
+ * to ensure all sheet edits are saved before the script reads config values.
+ */
 function saveConfigAndRun() {
   try {
+    // --- THIS IS THE FIX (v6.5) ---
+    // Force the spreadsheet to apply all pending changes immediately. This prevents a "race condition"
+    // where the script runs before the user's latest edits to the Config sheet are saved.
+    SpreadsheetApp.flush();
+    // --- END OF FIX ---
+
     findEventsMissingTag();
     const file = SpreadsheetApp.getActiveSpreadsheet();
     const triggers = ScriptApp.getProjectTriggers();
@@ -59,9 +70,6 @@ function saveConfigAndRun() {
 // #region 3. CORE LOGIC FUNCTIONS (THE "BRAINS")
 // =================================================================
 
-/**
- * @description The main data-gathering function. (Stable from v6.2)
- */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
@@ -176,11 +184,6 @@ function findEventsMissingTag() {
     }
 }
 
-/**
- * @description The main worker function that updates the calendar. (Optimized v6.0 + Bug Fix)
- * WHY THE CHANGE: Reverted the 'tagPrefix' variable to its original, hard-coded value to fix
- * a bug that caused an error when editing checkboxes.
- */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
@@ -198,11 +201,7 @@ function updateMeetingTag(e, isSingleEditMode) {
 
     ss.toast("Processing batch... Please wait.");
     
-    // --- THIS IS THE FIX (v6.3) ---
-    // The tag prefix is reliably hard-coded, as it was in the original stable versions.
     const tagPrefix = "Verkada Meeting Tag: ";
-    // --- END OF FIX ---
-    
     const seLeadTag = getConfig("SELeadTagText");
     const modifier = getConfig("InPersonModifier");
     const lastRow = sheet.getLastRow();
@@ -216,7 +215,7 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime());
     const minTime = new Date(Math.min(...eventTimes));
-    const maxTime = a new Date(Math.max(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
     maxTime.setHours(23, 59, 59);
 
     const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true });
