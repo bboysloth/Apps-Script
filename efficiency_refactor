@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v6.8
- * @description High-Performance Fetching. This version fixes a critical bug where large date ranges
- * would only return a partial list of events. The script now handles API pagination, looping
- * through all pages of results to guarantee a complete list of all meetings is fetched.
- * @version 6.8.0
+ * @file Meeting Tagger Tool v6.9
+ * @description Critical Performance Fix. The updateMeetingTag function now handles API pagination,
+ * fixing a bug where it would fail to update events on large lists ( >250) because its
+ * internal event map was incomplete. All functions are now robust for large date ranges.
+ * @version 6.9.0
  */
 
 // =================================================================
@@ -62,10 +62,7 @@ function saveConfigAndRun() {
 // =================================================================
 
 /**
- * @description Reads the calendar and populates the "Untagged Meetings" sheet.
- * WHY THE CHANGE: The calendar fetch logic is now wrapped in a do-while loop to handle
- * API pagination. This ensures ALL events in a large date range are retrieved, not just
- * the first page of results (approx. 250 events).
+ * @description Reads calendar and populates the "Untagged Meetings" sheet, now with robust pagination.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -95,33 +92,27 @@ function findEventsMissingTag() {
         end.setHours(23, 59, 59, 999);
         end.setDate(end.getDate() + daysAhead);
         
-        // --- THIS IS THE FIX (v6.8): PAGINATED FETCH ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         let allEvents = [];
         let pageToken = null;
-        let response;
         
-        // Use a do-while loop to fetch all pages of results from the Calendar API.
         do {
-          response = Calendar.Events.list(calendarId, {
+          const response = Calendar.Events.list(calendarId, {
             timeMin: start.toISOString(),
             timeMax: end.toISOString(),
             singleEvents: true,
             orderBy: 'startTime',
-            maxResults: 2500, // Ask for the maximum allowed per page to reduce API calls
+            maxResults: 2500,
             pageToken: pageToken
           });
 
           if (response.items) {
             allEvents = allEvents.concat(response.items);
           }
-          
-          // Get the token for the next page. If it's undefined, the loop will stop.
           pageToken = response.nextPageToken;
         } while (pageToken);
-        // --- END OF FIX ---
 
-        const events = allEvents; // Use the complete list for processing.
+        const events = allEvents;
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
         for (const event of events) {
@@ -216,7 +207,9 @@ function findEventsMissingTag() {
 }
 
 /**
- * The main worker function that updates the calendar. (Optimized v6.7)
+ * @description The main worker function that updates the calendar.
+ * WHY THE CHANGE: Now handles API pagination when fetching events to build its internal
+ * lookup map. This fixes a critical bug where updates would fail on large lists of events.
  */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -248,31 +241,41 @@ function updateMeetingTag(e, isSingleEditMode) {
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
-    if (eventTimes.length === 0) {
-        ss.toast("No valid dates found in the sheet to process.");
-        return;
-    }
+    if (eventTimes.length === 0) { ss.toast("No valid dates found to process."); return; }
     const minTime = new Date(Math.min(...eventTimes));
     const maxTime = new Date(Math.max(...eventTimes));
     maxTime.setHours(23, 59, 59);
 
-    const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true });
-    
+    // --- THIS IS THE FIX (v6.9): PAGINATED FETCH FOR THE EVENT MAP ---
+    let allEventsForMap = [];
+    let pageToken = null;
+    do {
+      const response = Calendar.Events.list(calendarId, {
+        timeMin: minTime.toISOString(),
+        timeMax: maxTime.toISOString(),
+        singleEvents: true,
+        maxResults: 2500,
+        pageToken: pageToken
+      });
+      if (response.items) {
+        allEventsForMap = allEventsForMap.concat(response.items);
+      }
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+    // --- END OF FIX ---
+
     const eventMap = new Map();
-    if (response.items) {
-        response.items.forEach(event => {
-            const startTime = new Date(event.start.dateTime || event.start.date).getTime();
-            const key = `${event.summary}_${startTime}`;
-            eventMap.set(key, event);
-        });
-    }
+    allEventsForMap.forEach(event => {
+        const startTime = new Date(event.start.dateTime || event.start.date).getTime();
+        const key = `${event.summary}_${startTime}`;
+        eventMap.set(key, event);
+    });
 
     const rowsToDelete = [];
     let updatedCount = 0;
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      
       const currentSeLead = rowData[4];
       const currentInPerson = rowData[5];
       const currentTag = rowData[6];
@@ -280,15 +283,12 @@ function updateMeetingTag(e, isSingleEditMode) {
       const originalInPerson = rowData[9];
       const originalTag = rowData[10];
 
-      const hasChanged = (currentSeLead !== originalSeLead) || 
-                         (currentInPerson !== originalInPerson) || 
-                         (currentTag !== originalTag);
+      const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
       if (hasChanged && currentTag) {
         const title = rowData[0];
         const startTime = new Date(rowData[1]).getTime();
         const lookupKey = `${title}_${startTime}`;
-        
         const eventToUpdate = eventMap.get(lookupKey);
 
         if (eventToUpdate) {
@@ -344,7 +344,6 @@ function updateMeetingTag(e, isSingleEditMode) {
 // =================================================================
 // #region 4. HELPER & UTILITY FUNCTIONS
 // =================================================================
-
 function getConfig(label) {
   const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
   if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
