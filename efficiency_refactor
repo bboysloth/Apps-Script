@@ -1,10 +1,13 @@
 /**
- * @file Meeting Tagger Tool v2.2.9
- * @description This version provides the definitive fix for colored dropdown chips.
- * It uses the "hidden helper sheet" method and also corrects the row-coloring
- * logic to PREVENT it from overwriting the chip formatting in Column G.
- * This also fixes the data-consistency bug in the tagMap.
- * @version 2.2.9
+ * @file Meeting Tagger Tool v2.2.10
+ * @description This is the definitive fix for colored dropdown chips.
+ * It reverts all failed attempts and correctly implements the *only* working method:
+ * 1. It builds the dropdown from a list (`requireValueInList`).
+ * 2. It reads the *actual* background colors from the "Tags" sheet (Col C).
+ * 3. It applies a unique Conditional Formatting rule for each tag to Column G.
+ * 4. It intelligently skips Column G when applying row-level colors (red/yellow).
+ * This also includes the critical fix to the `tagMap` to ensure data consistency.
+ * @version 2.2.10
  */
 
 // =================================================================
@@ -68,9 +71,9 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * WHY THE CHANGE (v2.2.9): 
- * 1. Now reads Columns B, C, and D and backgrounds from C.
- * 2. Builds the tagMap as Abbreviation -> FullName (correctly).
+ * WHY THE CHANGE (v2.2.10): 
+ * 1. Reads Columns B, C, and D and backgrounds from C.
+ * 2. Builds the tagMap as Abbreviation -> FullName.
  * 3. Passes all this data to the formatter.
  */
 function findEventsMissingTag() {
@@ -94,9 +97,11 @@ function findEventsMissingTag() {
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
+        // Read B, C, and D (Category, Full Name, Abbreviation)
         const tagsDataRange = tagsSheet.getRange("B2:D" + tagsSheet.getLastRow());
-        const tagsData = tagsDataRange.getValues(); // [Category, FullName, Abbreviation]
+        const tagsData = tagsDataRange.getValues(); 
         
+        // Read the background colors from Column C
         const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
         const tagBackgrounds = tagColorRange.getBackgrounds();
         
@@ -233,7 +238,7 @@ function findEventsMissingTag() {
             sheet.getRange("A2").setValue("No meetings found using your current criteria.");
         }
         
-        // --- 7. Apply all formatting (now with tagsData and tagBackgrounds) ---
+        // --- 7. Apply all formatting ---
         const configObject = { 
           seTaggingMode, 
           showTaggedMeetings, 
@@ -408,10 +413,10 @@ function getConfig(label) {
 
 /**
  * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
- * WHY THE CHANGE (v2.2.9): This is the definitive fix for colored chips.
- * It uses the "hidden helper sheet" method. Crucially, the row-coloring logic
- * at the end of this function is now "smart" and skips Column G to prevent
- * overwriting the chip styling.
+ * WHY THE CHANGE (v2.2.10): This is the definitive fix for colored chips.
+ * It uses the "conditional formatting" method, which is the correct one.
+ * It also intelligently skips Column G when applying row-level colors (red/yellow)
+ * to prevent the formatting conflict that broke the chips.
  */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     // --- 1. Standard Formatting ---
@@ -434,35 +439,39 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("H2").setValue(new Date().toLocaleString());
     sheet.hideColumns(9, 3); // Hide columns I, J, and K.
 
-    // --- 2. Automatic Dropdown & Coloring (The "Helper Sheet" Method) ---
+    // --- 2. Automatic Dropdown & Coloring (New in v2.2.10) ---
     if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
-        const ss = SpreadsheetApp.getActiveSpreadsheet();
-        const helperSheetName = "_TagListHelper";
-        let helperSheet = ss.getSheetByName(helperSheetName);
-        if (!helperSheet) {
-            helperSheet = ss.insertSheet(helperSheetName).hideSheet();
-        } else {
-            helperSheet.clear(); 
-        }
+        const dropdownRange = sheet.getRange(startRow, 7, lastRow - 1, 1); // Column G
+        // Get a simple list of tag names for the dropdown
+        const tagNames = configs.tagsData.map(row => row[1]); // [FullName, FullName, ...]
+        
+        // 1. Build the Data Validation (Dropdown) Rule
+        const dropdownRule = SpreadsheetApp.newDataValidation()
+            .requireValueInList(tagNames, true) // Use the list of names
+            .setAllowInvalid(false) // Only allow values from the list
+            .build();
+        
+        dropdownRange.setDataValidation(dropdownRule);
 
-        const tagNames = configs.tagsData.map(row => [row[1]]); // Get FullName from Col C
-        const tagColors = configs.tagBackgrounds; // Get colors from Col C
-
-        if (tagNames.length > 0) {
-            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
-            helperRange.setValues(tagNames);
-            helperRange.setBackgrounds(tagColors); 
-
-            const dropdownRange = sheet.getRange(startRow, 7, lastRow - 1, 1); // Column G
-            const dropdownRule = SpreadsheetApp.newDataValidation()
-                .requireValueInRange(helperRange, true) // Point to the hidden, colored range
-                .setAllowInvalid(false)
-                .build();
+        // 2. Build the Conditional Formatting (Color) Rules
+        let conditionalFormatRules = [];
+        
+        configs.tagsData.forEach((row, index) => {
+            const tagName = row[1];  // Full Name from Col C
+            const color = configs.tagBackgrounds[index][0]; // The specific hex color
             
-            dropdownRange.setDataValidation(dropdownRule);
-        }
+            const rule = SpreadsheetApp.newConditionalFormatRule()
+                .whenTextEqualTo(tagName)
+                .setBackground(color)
+                .setRanges([dropdownRange]) // Apply this rule to all of Column G
+                .build();
+            conditionalFormatRules.push(rule);
+        });
+        
+        // Apply all new color rules to the sheet.
+        sheet.setConditionalFormatRules(conditionalFormatRules);
     }
-    // --- End of Dropdown Logic ---
+    // --- End of New Logic ---
 
     // --- 3. Row Coloring Logic (THE FIX) ---
     // This logic now runs *after* the dropdowns are set and is designed
@@ -479,7 +488,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         if (noTagMeetings.length > 0) {
             // Color A-F (6 columns)
             sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
-            // Color H (1 column)
+            // Color H (1 column). Column 8.
             sheet.getRange(startRow, 8, noTagMeetings.length, 1).setBackground('#f4cccc');
         }
     }
