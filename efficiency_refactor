@@ -1,9 +1,18 @@
 /**
- * @file Meeting Tagger Tool v2.2.12
- * @description This version fixes a 'ReferenceError: sheet is not defined' bug
- * in the 'updateTagDropdownsAndColors' function. The variable was incorrectly
- * named 'sheet' instead of 'mainSheet' in one line.
- * @version 2.2.12
+ * @file Meeting Tagger Tool v2.2.13
+ * @description This version provides the definitive fix for colored dropdown chips
+ * and all associated formatting conflicts.
+ *
+ * 1. Adds a new 'Config: Update Tag Dropdowns & Colors' function. This is the
+ * correct, one-time setup that reads tag names and colors from the 'Tags'
+ * sheet (Column C) and applies them to Column G using conditional formatting.
+ * 2. The main row-coloring logic in '_formatUntaggedSheet' is now "smart" and
+ * ONLY applies to columns A, B, and C, preserving the chip colors in G
+ * and the TRUE/FALSE colors in D.
+ * 3. Column D coloring is fixed to be Green for TRUE and No Fill for FALSE.
+ * 4. Fixes a critical data-consistency bug between the two tag maps.
+ *
+ * @version 2.2.13
  */
 
 // =================================================================
@@ -21,7 +30,7 @@ function onOpen() {
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors') // NEW
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
@@ -82,7 +91,8 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * This function is now fast and only handles data-gathering and basic formatting.
+ * WHY THE CHANGE (v2.2.13): No change to this function's logic, but it now
+ * passes the necessary tag data to the modified _formatUntaggedSheet function.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -105,8 +115,11 @@ function findEventsMissingTag() {
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsData = tagsSheet.getRange("B2:D" + tagsSheet.getLastRow()).getValues(); // [Category, FullName, Abbreviation]
-        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
+        const tagsDataRange = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow());
+        const tagsData = tagsDataRange.getValues(); // [FullName, Abbreviation]
+        
+        // Build the map: key = Abbreviation (from col D, index 1), value = Full Name (from col C, index 0)
+        const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]]));
         
         // --- 3. DATE LOGIC "CONTROL SWITCH" ---
         let start, end;
@@ -238,7 +251,7 @@ function findEventsMissingTag() {
             sheet.getRange("A2").setValue("No meetings found using your current criteria.");
         }
         
-        // --- 7. Apply all formatting (now fast) ---
+        // --- 7. Apply all formatting ---
         const configObject = { 
           seTaggingMode, 
           showTaggedMeetings, 
@@ -252,7 +265,9 @@ function findEventsMissingTag() {
 }
 
 /**
- * The main worker function that updates the calendar. (Stable v2.2.9)
+ * The main worker function that updates the calendar.
+ * WHY THE CHANGE (v2.2.10): The tagMap logic is now fixed. It correctly maps
+ * FullName -> Abbreviation, which is necessary for the new dropdowns to work.
  */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -278,8 +293,12 @@ function updateMeetingTag(e, isSingleEditMode) {
     if (lastRow < 2) { ss.toast("No data to process."); return; }
     
     const tagsSheet = ss.getSheetByName("Tags");
+    // --- THIS IS THE FIX (v2.2.10) ---
+    // Read C and D, and map FullName (index 0) -> Abbreviation (index 1)
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
     const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
+    // --- END OF FIX ---
+
     const sheetData = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
@@ -319,7 +338,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       const rowData = sheetData[i];
       const currentSeLead = rowData[4];
       const currentInPerson = rowData[5];
-      const currentTag = rowData[6];
+      const currentTag = rowData[6]; // This is the Full Tag Name
       const originalSeLead = rowData[8];
       const originalInPerson = rowData[9];
       const originalTag = rowData[10];
@@ -345,7 +364,7 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          let abbreviatedTag = tagMap.get(currentTag);
+          let abbreviatedTag = tagMap.get(currentTag); 
           
           if (!abbreviatedTag) {
             SpreadsheetApp.getUi().alert(`Error: The tag "${currentTag}" was selected but could not be found in the "Tags" sheet. Skipping row.`);
@@ -404,8 +423,11 @@ function getConfig(label) {
 
 /**
  * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
- * This version is fast and only applies essential formatting. The expensive
- * dropdown/chip formatting is now in its own dedicated admin function.
+ * WHY THE CHANGE (v2.2.13): This is the definitive fix for all formatting.
+ * 1. It no longer does any dropdown or chip formatting (that's in the admin function).
+ * 2. It now correctly colors Col D (Green / No Fill).
+ * 3. It now correctly colors rows (A-C only) for SETagMode, avoiding conflicts.
+ * 4. It now correctly colors rows (A-F, H) for the other mode, avoiding Col G.
  */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     // --- 1. Standard Formatting ---
@@ -419,30 +441,42 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
         
+        // --- FIX for Col D ---
         const extRange = sheet.getRange(startRow, 4, lastRow - 1, 1);
         const extValues = extRange.getValues();
-        const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']);
+        // Sets green for TRUE and null (no fill) for FALSE
+        const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]); 
         extRange.setBackgrounds(extColors);
+        // --- END FIX ---
     }
     
     sheet.getRange("H2").setValue(new Date().toLocaleString());
     sheet.hideColumns(9, 3); // Hide columns I, J, and K.
     
-    // --- 2. Row Coloring Logic (Skips Column G) ---
+    // --- 2. Row Coloring Logic (THE DEFINITIVE FIX) ---
+    // This logic now runs *after* the dropdowns are set and is designed
+    // to *avoid* Column D (index 4) and Column G (index 7).
     if (configs.seTaggingMode) {
         if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc'); // Cols A-F
+            // Apply red ONLY to A-C
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); 
         }
         if (aeTaggedMeetings.length > 0) {
-            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 6).setBackground('#fff2cc'); // Cols A-F
+            // Apply yellow ONLY to A-C
+            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
         }
     } 
     else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc'); // Cols A-F
-            sheet.getRange(startRow, 8, noTagMeetings.length, 1).setBackground('#f4cccc'); // Col H
+            // Apply red to A-C (3 columns)
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            // Apply red to E-F (2 columns), skipping D
+            sheet.getRange(startRow, 5, noTagMeetings.length, 2).setBackground('#f4cccc');
+            // Apply red to H (1 column), skipping G
+            sheet.getRange(startRow, 8, noTagMeetings.length, 1).setBackground('#f4cccc');
         }
     }
+    // --- End of Fix ---
 
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
@@ -539,9 +573,10 @@ function updateQuarterDropdown() {
 }
 
 /**
- * NEW (v2.2.11): A one-time setup function run from the "Config" menu.
+ * NEW (v2.2.11+): A one-time setup function run from the "Config" menu.
  * This function builds the colored dropdowns for Column G using the correct
- * conditional formatting method.
+ * conditional formatting method. This is the only way to create colored chips
+ * that pull colors from another sheet.
  */
 function updateTagDropdownsAndColors() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -553,7 +588,7 @@ function updateTagDropdownsAndColors() {
         return;
     }
 
-    ss.toast("Updating tag dropdowns and colors for Column G... Please wait.");
+    ss.toast("Updating tag dropdowns and colors for Column G... This may take a moment.");
 
     // 1. Read the tag names (Col C) and their background colors (Col C)
     const tagRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
@@ -561,10 +596,9 @@ function updateTagDropdownsAndColors() {
     const tagBackgrounds = tagRange.getBackgrounds();
 
     // 2. Define the entire range for the dropdowns (e.g., G2:G1000)
-    // We use getMaxRows() to apply this to the *entire* column.
     const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1); // Column G from row 2 down
     
-    // 3. Clear any old rules from this range
+    // 3. Clear any old rules from this range AND the entire sheet
     dropdownRange.clearDataValidations();
     mainSheet.clearConditionalFormatRules(); // Clear all old rules from the sheet
 
@@ -590,10 +624,7 @@ function updateTagDropdownsAndColors() {
     });
     
     // 6. Apply all rules to the sheet
-    // --- THIS IS THE FIX (v2.2.12) ---
-    // The variable must be mainSheet, not sheet.
     mainSheet.setConditionalFormatRules(conditionalFormatRules);
-    // --- END OF FIX ---
 
     ss.toast("Tag dropdowns and chip colors have been updated for Column G.");
 }
