@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.2.1
- * @description This version adds a "None" option to the dynamic 'Quarter Override' dropdown,
- * allowing the user to bypass the quarter selection and revert to using the
- * 'DaysBack'/'DaysAhead' logic.
- * @version 2.2.1
+ * @file Meeting Tagger Tool v2.2.2
+ * @description This version contains a minor UI text change, renaming the
+ * 'Admin: Update Quarter List' menu item to 'Config: Update Quarter List'
+ * for better clarity. No logic was changed.
+ * @version 2.2.2
  */
 
 // =================================================================
@@ -12,6 +12,7 @@
 
 /**
  * Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
+ * WHY THE CHANGE (v2.2.2): Renamed 'Admin:...' to 'Config:...' as requested.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -21,7 +22,7 @@ function onOpen() {
       .addSeparator() // A visual dividing line in the menu.
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
-      .addItem('Admin: Update Quarter List', 'updateQuarterDropdown') // Admin tool to build the FQ dropdown
+      .addItem('Config: Update Quarter List', 'updateQuarterDropdown') // This line was updated
       .addToUi();
 }
 // #endregion
@@ -110,7 +111,6 @@ function findEventsMissingTag() {
         // --- 3. DATE LOGIC "CONTROL SWITCH" ---
         let start, end;
         
-        // THIS IS THE FIX (v2.0.2): Check if the selected quarter is null, empty, OR set to "None".
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
             // --- Path 1: Quarter Override is active ---
             const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
@@ -391,6 +391,7 @@ function updateMeetingTag(e, isSingleEditMode) {
 
 /**
  * A robust helper to read a single setting from the "Config" sheet.
+ * It finds the label in column A, then gets the value from column B.
  */
 function getConfig(label) {
   const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
@@ -440,17 +441,19 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 // #endregion
 
 // =================================================================
-// #region 5. DYNAMIC QUARTER FUNCTIONS
+// #region 5. DYNAMIC QUARTER FUNCTIONS (v2.2.1)
 // =================================================================
 
 /**
  * A helper function that takes a year and quarter number and returns the
  * exact start and end dates based on Verkada's FQ definition (starting Feb 1).
+ * @param {number} fiscalYear The fiscal year (e.g., 2026).
+ * @param {number} quarter The quarter number (1, 2, 3, or 4).
+ * @returns {{start: Date, end: Date}} An object with the start and end dates.
  */
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
   let startMonth, endMonth, startYear, endYear;
   
-  // Note: JavaScript months are 0-indexed (Jan=0, Feb=1, etc.)
   // We calculate the calendar year for the start of the fiscal year.
   // FY26 starts Feb 1, 2025. The calendar year is fiscalYear - 1.
   const calendarYear = fiscalYear - 1;
@@ -485,6 +488,8 @@ function _getDatesForVerkadaFQ(fiscalYear, quarter) {
 
 /**
  * The core "engine" that calculates Verkada's current fiscal quarter based on today's date.
+ * @param {Date} date The date to check (usually today).
+ * @returns {Object} An object { fiscalYear: number, quarter: number, name: string }.
  */
 function _getVerkadaFiscalQuarter(date) {
   const month = date.getMonth(); // 0-11
@@ -519,8 +524,7 @@ function _getVerkadaFiscalQuarter(date) {
  * of the current and past 4 fiscal quarters and creates a data validation dropdown
  * in the "Config" sheet.
  *
- * WHY THE CHANGE (v2.0.2): Now adds "None" as the first option in the list
- * to allow the user to revert to the DaysBack/DaysAhead logic.
+ * WHY THE CHANGE (v2.2.1): Now adds "None" as the first option in the list.
  */
 function updateQuarterDropdown() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -538,10 +542,8 @@ function updateQuarterDropdown() {
   
   const dropdownCell = finder.offset(0, 1);
   
-  // --- THIS IS THE FIX (v2.0.2) ---
-  // Initialize the list with "None" as the first option.
+  // Initialize the list with "None" as the first, default option.
   let quarters = ["None"];
-  // --- END OF FIX ---
   
   let today = new Date();
   
