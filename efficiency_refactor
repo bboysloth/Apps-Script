@@ -1,8 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.2.4
- * @description This version changes the config label from "Quarter Override" to "QuarterOverride"
- * to maintain a consistent naming convention with other labels in the Config sheet.
- * @version 2.2.4
+ * @file Meeting Tagger Tool v2.2.5
+ * @description QOL Update: This version reorganizes the "Meeting Tools" menu, moving the
+ * 'Save Config & Refresh' item to the bottom and renaming it to 'Config: Save & Refresh'
+ * for better grouping and clarity. No logic was changed.
+ * @version 2.2.5
  */
 
 // =================================================================
@@ -11,15 +12,16 @@
 
 /**
  * Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
+ * WHY THE CHANGE (v2.2.5): Reorganized menu items for better usability as requested.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
       .createMenu('Meeting Tools')
-      .addItem('Save Config & Refresh', 'saveConfigAndRun')
       .addItem('Refresh Untagged List', 'findEventsMissingTag')
       .addSeparator() // A visual dividing line in the menu.
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
+      .addItem('Config: Save Config & Refresh', 'saveConfigAndRun') // Moved and Renamed
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
       .addToUi();
 }
@@ -80,7 +82,6 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * WHY THE CHANGE (v2.2.4): Now looks for "QuarterOverride" (no space) for consistency.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -88,7 +89,7 @@ function findEventsMissingTag() {
         // --- 1. Read all configurations from the "Config" sheet ---
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
-        const selectedQuarter = getConfig("QuarterOverride"); // THIS LINE WAS UPDATED
+        const selectedQuarter = getConfig("QuarterOverride");
         
         const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -507,10 +508,8 @@ function _getVerkadaFiscalQuarter(date) {
 }
 
 /**
- * A user-facing function that runs from the "Config" menu to build the quarter dropdown.
- * WHY THE CHANGE (v2.2.4): This function is now dynamic and finds the label,
- * rather than relying on a hard-coded cell.
- */
+* A user-facing function that runs from the "Config" menu to build the quarter dropdown.
+*/
 function updateQuarterDropdown() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const configSheet = ss.getSheetByName("Config");
@@ -518,15 +517,14 @@ function updateQuarterDropdown() {
     throw new Error("Could not find 'Config' sheet.");
   }
   
-  // --- THIS IS THE DYNAMIC FIX ---
-  const labelToFind = "QuarterOverride"; // THIS LINE WAS UPDATED
+  const labelToFind = "QuarterOverride";
   const finder = configSheet.createTextFinder(labelToFind).matchEntireCell(true).findNext();
   if (!finder) {
     ss.toast(`Error: Could not find label "${labelToFind}" in Column A of the Config sheet.`);
     return;
   }
+  
   const dropdownCell = finder.offset(0, 1);
-  // --- END OF FIX ---
   
   let quarters = ["None"];
   let today = new Date();
