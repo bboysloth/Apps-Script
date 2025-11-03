@@ -1,10 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.2.3
- * @description This version contains a critical bug fix to the core filter logic.
- * Meetings created by a '@group.calendar.google.com' address are now
- * UNCONDITIONALLY filtered out, regardless of the 'ExternalAttendees'
- * flag setting. This ensures they are always treated as noise and ignored.
- * @version 2.2.3
+ * @file Meeting Tagger Tool v2.2.4
+ * @description This version changes the config label from "Quarter Override" to "QuarterOverride"
+ * to maintain a consistent naming convention with other labels in the Config sheet.
+ * @version 2.2.4
  */
 
 // =================================================================
@@ -22,7 +20,7 @@ function onOpen() {
       .addSeparator() // A visual dividing line in the menu.
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
-      .addItem('Config: Update Quarter List', 'updateQuarterDropdown') // Renamed in v2.2.2
+      .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
       .addToUi();
 }
 // #endregion
@@ -82,7 +80,7 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * WHY THE CHANGE (v2.3.0): The filter for group calendars is now unconditional.
+ * WHY THE CHANGE (v2.2.4): Now looks for "QuarterOverride" (no space) for consistency.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -90,7 +88,7 @@ function findEventsMissingTag() {
         // --- 1. Read all configurations from the "Config" sheet ---
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
-        const selectedQuarter = getConfig("Quarter Override");
+        const selectedQuarter = getConfig("QuarterOverride"); // THIS LINE WAS UPDATED
         
         const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -160,7 +158,7 @@ function findEventsMissingTag() {
 
         // --- 5. Process each event in memory, applying all filters ---
         for (const event of events) {
-            if (event.start.date) { continue; } // Skip all-day events
+            if (event.start.date) { continue; }
             if (!event.summary) continue;
             
             const title = event.summary;
@@ -168,12 +166,9 @@ function findEventsMissingTag() {
             
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
             
-            // --- THIS IS THE FIX (v2.3.0) ---
-            // Unconditionally skip any event created by a group calendar.
             if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) {
-              continue; // Skip this event
+              continue;
             }
-            // --- END OF FIX ---
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
@@ -453,7 +448,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
  */
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
   let startMonth, endMonth, startYear, endYear;
-  
   const calendarYear = fiscalYear - 1;
   
   switch (quarter) {
@@ -470,7 +464,7 @@ function _getDatesForVerkadaFQ(fiscalYear, quarter) {
       startYear = calendarYear; endYear = calendarYear;
       break;
     case 4: // Nov - Jan
-      startMonth = 10; endMonth = 0; // Nov to Jan
+      startMonth = 10; endMonth = 0;
       startYear = calendarYear; endYear = calendarYear + 1;
       break;
     default:
@@ -488,24 +482,23 @@ function _getDatesForVerkadaFQ(fiscalYear, quarter) {
  * The core "engine" that calculates Verkada's current fiscal quarter based on today's date.
  */
 function _getVerkadaFiscalQuarter(date) {
-  const month = date.getMonth(); // 0-11
+  const month = date.getMonth();
   const year = date.getFullYear();
-  
   let fiscalYear, quarter;
 
   if (month >= 1) { // Feb - Dec
-    fiscalYear = year + 1; // e.g., Feb 2025 is in FY26
+    fiscalYear = year + 1;
   } else { // Jan
-    fiscalYear = year; // e.g., Jan 2025 is in FY25
+    fiscalYear = year;
   }
   
-  if (month >= 1 && month <= 3) { // Feb, Mar, Apr
+  if (month >= 1 && month <= 3) {
     quarter = 1;
-  } else if (month >= 4 && month <= 6) { // May, Jun, Jul
+  } else if (month >= 4 && month <= 6) {
     quarter = 2;
-  } else if (month >= 7 && month <= 9) { // Aug, Sep, Oct
+  } else if (month >= 7 && month <= 9) {
     quarter = 3;
-  } else { // Nov (10), Dec (11), Jan (0)
+  } else {
     quarter = 4;
   }
   
@@ -514,10 +507,10 @@ function _getVerkadaFiscalQuarter(date) {
 }
 
 /**
-* A user-facing function that runs from the "Admin" menu. It generates a list
-* of the current and past 4 fiscal quarters and creates a data validation dropdown
-* in the "Config" sheet.
-*/
+ * A user-facing function that runs from the "Config" menu to build the quarter dropdown.
+ * WHY THE CHANGE (v2.2.4): This function is now dynamic and finds the label,
+ * rather than relying on a hard-coded cell.
+ */
 function updateQuarterDropdown() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const configSheet = ss.getSheetByName("Config");
@@ -525,14 +518,15 @@ function updateQuarterDropdown() {
     throw new Error("Could not find 'Config' sheet.");
   }
   
-  const labelToFind = "Quarter Override";
+  // --- THIS IS THE DYNAMIC FIX ---
+  const labelToFind = "QuarterOverride"; // THIS LINE WAS UPDATED
   const finder = configSheet.createTextFinder(labelToFind).matchEntireCell(true).findNext();
   if (!finder) {
     ss.toast(`Error: Could not find label "${labelToFind}" in Column A of the Config sheet.`);
     return;
   }
-  
   const dropdownCell = finder.offset(0, 1);
+  // --- END OF FIX ---
   
   let quarters = ["None"];
   let today = new Date();
@@ -547,7 +541,7 @@ function updateQuarterDropdown() {
     
     const dates = _getDatesForVerkadaFQ(fq.fiscalYear, fq.quarter);
     today = new Date(dates.start.getTime() - 1);
-  }
+  .
   
   const rule = SpreadsheetApp.newDataValidation()
       .requireValueInList(quarters, true)
