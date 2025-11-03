@@ -1,10 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.2.11
- * @description Performance Optimization: This version moves the "expensive" dropdown
- * creation and chip-coloring logic into its own separate admin function
- * ('updateTagDropdownsAndColors'). The main 'findEventsMissingTag' function is
- * now fast again as it no longer handles this heavy formatting on every run.
- * @version 2.2.11
+ * @file Meeting Tagger Tool v2.2.12
+ * @description This version fixes a 'ReferenceError: sheet is not defined' bug
+ * in the 'updateTagDropdownsAndColors' function. The variable was incorrectly
+ * named 'sheet' instead of 'mainSheet' in one line.
+ * @version 2.2.12
  */
 
 // =================================================================
@@ -13,7 +12,6 @@
 
 /**
  * Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
- * WHY THE CHANGE (v2.2.11): Added a new admin function for the tag dropdowns.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -23,7 +21,7 @@ function onOpen() {
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors') // NEW
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
@@ -84,8 +82,7 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * WHY THE CHANGE (v2.2.11): Removed all dropdown/chip logic.
- * It now just passes the raw data to the simplified _formatUntaggedSheet function.
+ * This function is now fast and only handles data-gathering and basic formatting.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -407,9 +404,8 @@ function getConfig(label) {
 
 /**
  * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
- * WHY THE CHANGE (v2.2.11): This function is now fast. It no longer builds
- * the expensive dropdowns or conditional formatting, and only applies
- * essential fonts, colors, and row-coloring.
+ * This version is fast and only applies essential formatting. The expensive
+ * dropdown/chip formatting is now in its own dedicated admin function.
  */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     // --- 1. Standard Formatting ---
@@ -544,8 +540,8 @@ function updateQuarterDropdown() {
 
 /**
  * NEW (v2.2.11): A one-time setup function run from the "Config" menu.
- * This function builds the colored dropdowns for Column G. It is intentionally
- * separate from the main refresh script to keep the refresh fast.
+ * This function builds the colored dropdowns for Column G using the correct
+ * conditional formatting method.
  */
 function updateTagDropdownsAndColors() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -561,17 +557,18 @@ function updateTagDropdownsAndColors() {
 
     // 1. Read the tag names (Col C) and their background colors (Col C)
     const tagRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-    const tagNames = tagRange.getValues().map(row => row[0]); // [Demo, Best Practice, ...]
+    const tagNames = tagRange.getValues().map(row => row[0]).filter(String); // [Demo, Best Practice, ...]
     const tagBackgrounds = tagRange.getBackgrounds();
 
     // 2. Define the entire range for the dropdowns (e.g., G2:G1000)
-    const dropdownRange = mainSheet.getRange("G2:G" + mainSheet.getMaxRows());
+    // We use getMaxRows() to apply this to the *entire* column.
+    const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1); // Column G from row 2 down
     
     // 3. Clear any old rules from this range
     dropdownRange.clearDataValidations();
     mainSheet.clearConditionalFormatRules(); // Clear all old rules from the sheet
 
-    // 4. Build the dropdown rule from a simple list. This is what enables the "Chip" UI.
+    // 4. Build the dropdown rule from a simple list. This enables the "Chip" UI.
     const dropdownRule = SpreadsheetApp.newDataValidation()
         .requireValueInList(tagNames, true)
         .setAllowInvalid(false)
@@ -593,7 +590,10 @@ function updateTagDropdownsAndColors() {
     });
     
     // 6. Apply all rules to the sheet
-    sheet.setConditionalFormatRules(conditionalFormatRules);
+    // --- THIS IS THE FIX (v2.2.12) ---
+    // The variable must be mainSheet, not sheet.
+    mainSheet.setConditionalFormatRules(conditionalFormatRules);
+    // --- END OF FIX ---
 
     ss.toast("Tag dropdowns and chip colors have been updated for Column G.");
 }
