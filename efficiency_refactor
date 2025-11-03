@@ -541,7 +541,7 @@ function updateQuarterDropdown() {
     
     const dates = _getDatesForVerkadaFQ(fq.fiscalYear, fq.quarter);
     today = new Date(dates.start.getTime() - 1);
-  .
+  }
   
   const rule = SpreadsheetApp.newDataValidation()
       .requireValueInList(quarters, true)
