@@ -1,0 +1,605 @@
+/**
+ * @file Meeting Tagger Tool v2.2.14
+ * @description This is the definitive fix for the colored chip and row coloring conflict.
+ * The `findEventsMissingTag` function no longer uses `sheet.clear()`. Instead, it
+ * surgically clears *only* the content, old backgrounds, and font styles,
+ * which PRESERVES the conditional formatting rules set by the admin function.
+ * @version 2.2.14
+ */
+
+// =================================================================
+// #region 1. SPREADSHEET UI & MENU CREATION
+// =================================================================
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+      .createMenu('Meeting Tools')
+      .addItem('Refresh Untagged List', 'findEventsMissingTag')
+      .addSeparator()
+      .addItem('Apply Changes to Calendar', 'applyBatchChanges')
+      .addSeparator()
+      .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Save & Refresh', 'saveConfigAndRun')
+      .addToUi();
+}
+// #endregion
+
+// =================================================================
+// #region 2. SCRIPT ENTRY POINTS (USER-TRIGGERED ACTIONS)
+// =================================================================
+
+function handleEdit(e) {
+  updateMeetingTag(e, true); 
+}
+
+function applyBatchChanges() {
+  updateMeetingTag(null, false); 
+}
+
+function saveConfigAndRun() {
+  try {
+    SpreadsheetApp.flush();
+    findEventsMissingTag();
+    const file = SpreadsheetApp.getActiveSpreadsheet();
+    const triggers = ScriptApp.getProjectTriggers();
+    const minutes = parseInt(getConfig("MinutesInterval"), 10);
+
+    triggers.forEach(trigger => {
+      const handler = trigger.getHandlerFunction();
+      if (handler === 'findEventsMissingTag') {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+
+    if (minutes > 0) {
+      ScriptApp.newTrigger('findEventsMissingTag').timeBased().everyMinutes(minutes).create();
+    }
+    ScriptApp.newTrigger('findEventsMissingTag').forSpreadsheet(file).onOpen().create();
+    SpreadsheetApp.getActiveSpreadsheet().toast("Configuration saved and list refreshed.");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(e.message);
+  }
+}
+// #endregion
+
+// =================================================================
+// #region 3. CORE LOGIC FUNCTIONS (THE "BRAINS")
+// =================================================================
+
+/**
+ * The main data-gathering function.
+ * WHY THE CHANGE (v2.2.14): Replaced `sheet.clear()` with a surgical
+ * clear of content and old formatting. This preserves the conditional
+ * formatting rules for the Column G chips.
+ */
+function findEventsMissingTag() {
+    const file = SpreadsheetApp.getActiveSpreadsheet();
+    try {
+        // --- 1. Read all configurations ---
+        const daysBack = parseInt(getConfig("DaysBack"), 10);
+        const daysAhead = parseInt(getConfig("DaysAhead"), 10);
+        const selectedQuarter = getConfig("QuarterOverride");
+        
+        const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
+        const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
+        const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
+        const modifier = getConfig("InPersonModifier");
+        const seLeadTagText = getConfig("SELeadTagText");
+        const tagPrefix = "Verkada Meeting Tag: ";
+
+        // --- 2. Prepare tag data ---
+        const tagsSheet = file.getSheetByName("Tags");
+        const tagsDataRange = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow());
+        const tagsData = tagsDataRange.getValues(); // [FullName, Abbreviation]
+        const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]])); // Abbr -> FullName
+        
+        // --- 3. DATE LOGIC "CONTROL SWITCH" ---
+        let start, end;
+        if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
+            const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
+            if (!parts) {
+                throw new Error(`Invalid quarter format: "${selectedQuarter}". Please re-run the Config: Update Quarter List tool.`);
+            }
+            const fiscalYear = parseInt(parts[1], 10) + 2000;
+            const quarterNum = parseInt(parts[2], 10);
+            const dates = _getDatesForVerkadaFQ(fiscalYear, quarterNum);
+            start = dates.start;
+            end = dates.end;
+        } else {
+            start = new Date();
+            start.setHours(0, 0, 0, 0);
+            start.setDate(start.getDate() - daysBack);
+            end = new Date();
+            end.setHours(23, 59, 59, 999);
+            end.setDate(end.getDate() + daysAhead);
+        }
+        
+        // --- 4. Fetch all calendar events (with pagination) ---
+        const calendarId = CalendarApp.getDefaultCalendar().getId();
+        let allEvents = [];
+        let pageToken = null;
+        do {
+          const response = Calendar.Events.list(calendarId, {
+            timeMin: start.toISOString(),
+            timeMax: end.toISOString(),
+            singleEvents: true,
+            orderBy: 'startTime',
+            maxResults: 2500,
+            pageToken: pageToken
+          });
+          if (response.items) {
+            allEvents = allEvents.concat(response.items);
+          }
+          pageToken = response.nextPageToken;
+        } while (pageToken);
+
+        const events = allEvents;
+        const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
+
+        // --- 5. Process each event in memory, applying all filters ---
+        for (const event of events) {
+            if (event.start.date) { continue; }
+            if (!event.summary) continue;
+            
+            const title = event.summary;
+            if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
+            
+            const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
+            
+            if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) {
+              continue;
+            }
+
+            const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
+            const allParticipants = [...new Set([organizerEmail, ...attendees])];
+            
+            const isInternalEntity = email => {
+                if (!email) return false;
+                const lowerCaseEmail = email.toLowerCase();
+                return lowerCaseEmail.endsWith("@verkada.com") ||
+                       lowerCaseEmail.endsWith("@resource.calendar.google.com") ||
+                       lowerCaseEmail.endsWith("@group.calendar.google.com");
+            };
+            const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
+
+            if (externalFilter && isPurelyInternal) { continue; }
+            
+            if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
+            
+            let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
+            const hasMainTag = description.includes(tagPrefix);
+            let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
+            let isInPerson = false;
+            let fullTagName = "";
+            let hasSETagInDescription = false; 
+
+            if (hasMainTag) {
+                const lines = description.split('\n');
+                const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
+                if (tagLine) {
+                    hasSETagInDescription = tagLine.includes("(SE)");
+                    let abbreviatedTag = tagLine.trim().substring(tagPrefix.length).trim();
+                    if (modifier && abbreviatedTag.includes(modifier)) isInPerson = true;
+                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
+                    fullTagName = tagMap.get(lookupKey) || "";
+                }
+            }
+            
+            const eventStartTime = new Date(event.start.dateTime || event.start.date);
+            const hasExternalAttendee = !isPurelyInternal;
+            
+            const rowData = [
+                title, eventStartTime, organizerEmail, hasExternalAttendee, 
+                isSeLead, isInPerson, fullTagName, 
+                '', 
+                isSeLead, isInPerson, fullTagName
+            ];
+            
+            if (seTaggingMode) {
+                if (hasSETagInDescription) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); } 
+                else if (hasMainTag) { aeTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            } else {
+                if (hasMainTag) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); }
+                else { noTagMeetings.push(rowData); }
+            }
+        }
+        
+        // --- 6. Write all results to the sheet ---
+        const sheet = file.getSheets()[0];
+        
+        // --- THIS IS THE FIX (v2.2.14) ---
+        // Instead of `sheet.clear()`, we surgically clear the old data and row-level
+        // formats, but leave Data Validation and Conditional Formatting rules intact.
+        if (sheet.getLastRow() > 1) {
+            const rangeToClear = sheet.getRange(2, 1, sheet.getMaxRows() - 1, sheet.getMaxColumns());
+            rangeToClear.clearContent();
+            rangeToClear.setBackground(null);
+            rangeToClear.setFontLine(null);
+        }
+        // --- END OF FIX ---
+        
+        const headers = [
+            "Title", "Start Time", "Created By", "External Attendees", 
+            "SE Lead", "In Person", "Add Tag to Meeting",
+            "Last Refreshed",
+            "Original SE Lead", "Original In Person", "Original Tag"
+        ];
+        // We only set headers if the sheet was completely empty (which it won't be, but good practice)
+        if (sheet.getLastRow() === 0) {
+            sheet.appendRow(headers);
+        }
+        
+        const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
+        
+        if (finalList.length > 0) {
+            sheet.getRange(2, 1, finalList.length, headers.length).setValues(finalList);
+        } else {
+            sheet.getRange("A2").setValue("No meetings found using your current criteria.");
+        }
+        
+        // --- 7. Apply all formatting ---
+        const configObject = { 
+          seTaggingMode, 
+          showTaggedMeetings, 
+          externalFilter
+        };
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configObject);
+        
+    } catch (e) {
+        SpreadsheetApp.getUi().alert(e.message);
+    }
+}
+
+/**
+ * The main worker function that updates the calendar. (Stable v2.2.10)
+ */
+function updateMeetingTag(e, isSingleEditMode) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  try {
+    if (isSingleEditMode) {
+      const range = e.range;
+      if (range.getRow() <= 1) return;
+      const editedCol = range.getColumn();
+      if (editedCol === 5 || editedCol === 6) {
+        if (e.value === "TRUE") range.setBackground('#d9ead3');
+        else range.setBackground('#ffffff');
+      }
+      return; 
+    }
+
+    ss.toast("Processing batch... Please wait.");
+    
+    const tagPrefix = "Verkada Meeting Tag: ";
+    const seLeadTag = getConfig("SELeadTagText");
+    const modifier = getConfig("InPersonModifier");
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) { ss.toast("No data to process."); return; }
+    
+    const tagsSheet = ss.getSheetByName("Tags");
+    const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
+
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
+    const calendarId = CalendarApp.getDefaultCalendar().getId();
+    
+    const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
+    if (eventTimes.length === 0) { ss.toast("No valid dates found in the sheet to process."); return; }
+    const minTime = new Date(Math.min(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
+    maxTime.setHours(23, 59, 59);
+
+    let allEventsForMap = [];
+    let pageToken = null;
+    do {
+      const response = Calendar.Events.list(calendarId, {
+        timeMin: minTime.toISOString(),
+        timeMax: maxTime.toISOString(),
+        singleEvents: true,
+        maxResults: 2500,
+        pageToken: pageToken
+      });
+      if (response.items) {
+        allEventsForMap = allEventsForMap.concat(response.items);
+      }
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    const eventMap = new Map();
+    allEventsForMap.forEach(event => {
+        const startTime = new Date(event.start.dateTime || event.start.date).getTime();
+        const key = `${event.summary}_${startTime}`;
+        eventMap.set(key, event);
+    });
+
+    const rowsToDelete = [];
+    let updatedCount = 0;
+    
+    for (let i = 0; i < sheetData.length; i++) {
+      const rowData = sheetData[i];
+      const currentSeLead = rowData[4];
+      const currentInPerson = rowData[5];
+      const currentTag = rowData[6];
+      const originalSeLead = rowData[8];
+      const originalInPerson = rowData[9];
+      const originalTag = rowData[10];
+
+      const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
+
+      if (hasChanged && currentTag) {
+        const title = rowData[0];
+        const startTime = new Date(rowData[1]).getTime();
+        const lookupKey = `${title}_${startTime}`;
+        const eventToUpdate = eventMap.get(lookupKey);
+
+        if (eventToUpdate) {
+          let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+
+          const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
+          description = description.replace(seLeadRegex, '').trim();
+          if (currentSeLead) {
+            description += "\n" + seLeadTag;
+          }
+
+          const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
+          description = description.replace(aggressiveRemovalRegex, '');
+          description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
+
+          let abbreviatedTag = tagMap.get(currentTag);
+          
+          if (!abbreviatedTag) {
+            SpreadsheetApp.getUi().alert(`Error: The tag "${currentTag}" was selected but could not be found in the "Tags" sheet. Skipping row.`);
+            continue;
+          }
+          
+          if (currentInPerson && abbreviatedTag) {
+            let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+            if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+            let coreTag = abbreviatedTag.replace(';', '').trim();
+            abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+          }
+          
+          const finalTagString = tagPrefix + abbreviatedTag;
+          description += "\n\n" + finalTagString;
+          
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          rowsToDelete.push(i + 2);
+          updatedCount++;
+        }
+      }
+    }
+
+    if (updatedCount > 0) {
+      const numDataRows = lastRow - 1;
+      if (updatedCount === numDataRows && rowsToDelete.length === numDataRows) {
+        sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).clearContent();
+      } else {
+        rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      }
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
+    } else {
+      ss.toast("No changes were detected to apply.");
+    }
+
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(err.message);
+  }
+}
+// #endregion
+
+// =================================================================
+// #region 4. HELPER & UTILITY FUNCTIONS
+// =================================================================
+
+/**
+ * A robust helper to read a single setting from the "Config" sheet.
+ */
+function getConfig(label) {
+  const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
+  if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
+  const finder = configSheet.createTextFinder(label).matchEntireCell(true).findNext();
+  if (!finder) throw new Error(`Config label "${label}" not found in 'Config' sheet. Please add it to column A.`);
+  return finder.offset(0, 1).getValue();
+}
+
+/**
+ * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
+ * WHY THE CHANGE (v2.2.14): This function is now fast. It no longer builds
+ * dropdowns. It only applies essential formats and the "smart" row-coloring
+ * logic that avoids conflicts with Column D and Column G.
+ */
+function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
+    // --- 1. Standard Formatting ---
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
+    
+    const lastRow = sheet.getLastRow();
+    const startRow = 2;
+    
+    if (lastRow > 1) {
+        sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
+        sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
+        
+        // --- FIX for Col D (v2.2.13) ---
+        const extRange = sheet.getRange(startRow, 4, lastRow - 1, 1);
+        const extValues = extRange.getValues();
+        // Sets green for TRUE and null (no fill) for FALSE
+        const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]); 
+        extRange.setBackgrounds(extColors);
+    }
+    
+    sheet.getRange("H2").setValue(new Date().toLocaleString());
+    sheet.hideColumns(9, 3); // Hide columns I, J, and K.
+    
+    // --- 2. Row Coloring Logic (THE DEFINITIVE FIX) ---
+    // This logic is now "smart" and skips Column D (index 4) and Column G (index 7).
+    if (configs.seTaggingMode) {
+        if (noTagMeetings.length > 0) {
+            // Apply red ONLY to A-C
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); 
+        }
+        if (aeTaggedMeetings.length > 0) {
+            // Apply yellow ONLY to A-C
+            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+        }
+    } 
+    else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
+        if (noTagMeetings.length > 0) {
+            // Apply red to A-C (3 columns)
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            // Apply red to E-F (2 columns), skipping D
+            sheet.getRange(startRow, 5, noTagMeetings.length, 2).setBackground('#f4cccc');
+            // Apply red to H (1 column), skipping G
+            sheet.getRange(startRow, 8, noTagMeetings.length, 1).setBackground('#f4cccc');
+        }
+    }
+    // --- End of Fix ---
+
+    if (fullyTaggedMeetings.length > 0) {
+        const offset = noTagMeetings.length + aeTaggedMeetings.length;
+        sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
+    }
+}
+// #endregion
+
+// =================================================================
+// #region 5. DYNAMIC QUARTER & NEW DROPDOWN FUNCTIONS
+// =================================================================
+
+function _getDatesForVerkadaFQ(fiscalYear, quarter) {
+  let startMonth, endMonth, startYear, endYear;
+  const calendarYear = fiscalYear - 1;
+  
+  switch (quarter) {
+    case 1: startMonth = 1; endMonth = 3; startYear = calendarYear; endYear = calendarYear; break;
+    case 2: startMonth = 4; endMonth = 6; startYear = calendarYear; endYear = calendarYear; break;
+    case 3: startMonth = 7; endMonth = 9; startYear = calendarYear; endYear = calendarYear; break;
+    case 4: startMonth = 10; endMonth = 0; startYear = calendarYear; endYear = calendarYear + 1; break;
+    default: throw new Error("Invalid quarter number provided.");
+  }
+  
+  const startDate = new Date(startYear, startMonth, 1);
+  const endDate = new Date(endYear, endMonth + 1, 0);
+  endDate.setHours(23, 59, 59, 999);
+  
+  return { start: startDate, end: endDate };
+}
+
+function _getVerkadaFiscalQuarter(date) {
+  const month = date.getMonth();
+  const year = date.getFullYear();
+  let fiscalYear, quarter;
+
+  if (month >= 1) { fiscalYear = year + 1; } else { fiscalYear = year; }
+  
+  if (month >= 1 && month <= 3) { quarter = 1; }
+  else if (month >= 4 && month <= 6) { quarter = 2; }
+  else if (month >= 7 && month <= 9) { quarter = 3; }
+  else { quarter = 4; }
+  
+  const fyLabel = `FY${fiscalYear.toString().slice(-2)}`;
+  return { fiscalYear, quarter, name: `${fyLabel} Q${quarter}` };
+}
+
+function updateQuarterDropdown() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const configSheet = ss.getSheetByName("Config");
+  if (!configSheet) {
+    throw new Error("Could not find 'Config' sheet.");
+  }
+  
+  const labelToFind = "QuarterOverride";
+  const finder = configSheet.createTextFinder(labelToFind).matchEntireCell(true).findNext();
+  if (!finder) {
+    ss.toast(`Error: Could not find label "${labelToFind}" in Column A of the Config sheet.`);
+    return;
+  }
+  
+  const dropdownCell = finder.offset(0, 1);
+  let quarters = ["None"];
+  let today = new Date();
+  
+  for (let i = 0; i < 5; i++) {
+    const fq = _getVerkadaFiscalQuarter(today);
+    let name = fq.name;
+    if (i === 0) { name += " (Current)"; }
+    quarters.push(name);
+    
+    const dates = _getDatesForVerkadaFQ(fq.fiscalYear, fq.quarter);
+    today = new Date(dates.start.getTime() - 1);
+  }
+  
+  const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(quarters, true)
+      .setAllowInvalid(false)
+      .build();
+      
+  dropdownCell.setDataValidation(rule);
+  
+  ss.toast(`Quarter dropdown has been updated at cell ${dropdownCell.getA1Notation()}`);
+}
+
+/**
+ * NEW (v2.2.11+): A one-time setup function run from the "Config" menu.
+ * This function builds the colored dropdowns for Column G using the correct
+ * conditional formatting method. This is the only way to create colored chips
+ * that pull colors from another sheet.
+ */
+function updateTagDropdownsAndColors() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tagsSheet = ss.getSheetByName("Tags");
+    const mainSheet = ss.getSheets()[0]; // Assumes "Untagged Meetings" is the first sheet
+
+    if (!tagsSheet) {
+        ss.toast("Error: 'Tags' sheet not found.");
+        return;
+    }
+
+    ss.toast("Updating tag dropdowns and colors for Column G... This may take a moment.");
+
+    // 1. Read the tag names (Col C) and their background colors (Col C)
+    const tagRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+    const tagNames = tagRange.getValues().map(row => row[0]).filter(String); // [Demo, Best Practice, ...]
+    const tagBackgrounds = tagRange.getBackgrounds();
+
+    // 2. Define the entire range for the dropdowns (e.g., G2:G1000)
+    const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1); // Column G from row 2 down
+    
+    // 3. Clear any old rules from this range AND the entire sheet
+    dropdownRange.clearDataValidations();
+    mainSheet.clearConditionalFormatRules(); // Clear all old rules from the sheet
+
+    // 4. Build the dropdown rule from a simple list. This enables the "Chip" UI.
+    const dropdownRule = SpreadsheetApp.newDataValidation()
+        .requireValueInList(tagNames, true)
+        .setAllowInvalid(false)
+        .build();
+    
+    dropdownRange.setDataValidation(dropdownRule);
+
+    // 5. Build the new conditional format rules
+    let conditionalFormatRules = [];
+    tagNames.forEach((tagName, index) => {
+        if (tagName === "") return; // Skip empty tag names
+        const color = tagBackgrounds[index][0]; // Get the hex color for this tag
+        
+        const rule = SpreadsheetApp.newConditionalFormatRule()
+            .whenTextEqualTo(tagName)
+            .setBackground(color)
+            .setRanges([dropdownRange]) // Apply this rule to all of Column G
+            .build();
+        conditionalFormatRules.push(rule);
+    });
+    
+    // 6. Apply all rules to the sheet
+    mainSheet.setConditionalFormatRules(conditionalFormatRules);
+
+    ss.toast("Tag dropdowns and chip colors have been updated for Column G.");
+}
+// #endregion
