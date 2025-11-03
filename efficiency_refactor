@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.2.5
- * @description QOL Update: This version reorganizes the "Meeting Tools" menu, moving the
- * 'Save Config & Refresh' item to the bottom and renaming it to 'Config: Save & Refresh'
- * for better grouping and clarity. No logic was changed.
- * @version 2.2.5
+ * @file Meeting Tagger Tool v2.2.6
+ * @description This version adds a major QOL improvement: The dropdown in Column G ("Add Tag to Meeting")
+ * is now generated automatically from the "Tags" sheet. It also reads the category from
+ * Column B of the "Tags" sheet to apply specific colors to the dropdown "chips".
+ * @version 2.2.6
  */
 
 // =================================================================
@@ -12,7 +12,6 @@
 
 /**
  * Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
- * WHY THE CHANGE (v2.2.5): Reorganized menu items for better usability as requested.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -21,8 +20,8 @@ function onOpen() {
       .addSeparator() // A visual dividing line in the menu.
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
-      .addItem('Config: Save Config & Refresh', 'saveConfigAndRun') // Moved and Renamed
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
+      .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
 // #endregion
@@ -82,6 +81,8 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
+ * WHY THE CHANGE (v2.2.6): Now reads Columns B, C, and D from the "Tags" sheet
+ * and passes this richer data to the _formatUntaggedSheet function.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -102,32 +103,29 @@ function findEventsMissingTag() {
         const seLeadTagText = getConfig("SELeadTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
 
+        // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
-        const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]]));
+        // Read B, C, and D (Category, Full Name, Abbreviation)
+        const tagsData = tagsSheet.getRange("B2:D" + tagsSheet.getLastRow()).getValues();
+        // Build the map: key = Abbreviation (from col D, index 2), value = Full Name (from col C, index 1)
+        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         
         // --- 3. DATE LOGIC "CONTROL SWITCH" ---
         let start, end;
-        
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
-            // --- Path 1: Quarter Override is active ---
             const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
             if (!parts) {
                 throw new Error(`Invalid quarter format: "${selectedQuarter}". Please re-run the Admin: Update Quarter List tool.`);
             }
             const fiscalYear = parseInt(parts[1], 10) + 2000;
             const quarterNum = parseInt(parts[2], 10);
-            
             const dates = _getDatesForVerkadaFQ(fiscalYear, quarterNum);
             start = dates.start;
             end = dates.end;
-            
         } else {
-            // --- Path 2: Fallback to DaysBack/DaysAhead (original logic) ---
             start = new Date();
             start.setHours(0, 0, 0, 0);
             start.setDate(start.getDate() - daysBack);
-
             end = new Date();
             end.setHours(23, 59, 59, 999);
             end.setDate(end.getDate() + daysAhead);
@@ -137,7 +135,6 @@ function findEventsMissingTag() {
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         let allEvents = [];
         let pageToken = null;
-        
         do {
           const response = Calendar.Events.list(calendarId, {
             timeMin: start.toISOString(),
@@ -147,7 +144,6 @@ function findEventsMissingTag() {
             maxResults: 2500,
             pageToken: pageToken
           });
-
           if (response.items) {
             allEvents = allEvents.concat(response.items);
           }
@@ -181,7 +177,6 @@ function findEventsMissingTag() {
                        lowerCaseEmail.endsWith("@resource.calendar.google.com") ||
                        lowerCaseEmail.endsWith("@group.calendar.google.com");
             };
-
             const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
 
             if (externalFilter && isPurelyInternal) { continue; }
@@ -202,8 +197,9 @@ function findEventsMissingTag() {
                     hasSETagInDescription = tagLine.includes("(SE)");
                     let abbreviatedTag = tagLine.trim().substring(tagPrefix.length).trim();
                     if (modifier && abbreviatedTag.includes(modifier)) isInPerson = true;
+                    // Use the map to find the correct Full Name, even if the tag is invalid (e.g., "DR")
                     let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
-                    fullTagName = tagMap.get(lookupKey) || "";
+                    fullTagName = tagMap.get(lookupKey) || ""; // If invalid, fullTagName will be blank.
                 }
             }
             
@@ -245,8 +241,9 @@ function findEventsMissingTag() {
             sheet.getRange("A2").setValue("No meetings found using your current criteria.");
         }
         
-        // --- 7. Apply all formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        // --- 7. Apply all formatting (now with tagsData) ---
+        const configObject = { seTaggingMode, showTaggedMeetings, externalFilter, tagsData: tagsData };
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configObject);
         
     } catch (e) {
         SpreadsheetApp.getUi().alert(e.message);
@@ -255,6 +252,7 @@ function findEventsMissingTag() {
 
 /**
  * The main worker function that updates the calendar. (Stable v6.9)
+ * This function is NOT changed in v2.2.6.
  */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -280,8 +278,9 @@ function updateMeetingTag(e, isSingleEditMode) {
     if (lastRow < 2) { ss.toast("No data to process."); return; }
     
     const tagsSheet = ss.getSheetByName("Tags");
+    // This function only needs the map, so we only read C and D here.
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
-    const tagMap = new Map(tagsData.map(row => [row[0], row[1]]));
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // Key: Full Name, Value: Abbreviation
     const sheetData = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
@@ -321,7 +320,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       const rowData = sheetData[i];
       const currentSeLead = rowData[4];
       const currentInPerson = rowData[5];
-      const currentTag = rowData[6];
+      const currentTag = rowData[6]; // This is the Full Tag Name
       const originalSeLead = rowData[8];
       const originalInPerson = rowData[9];
       const originalTag = rowData[10];
@@ -347,7 +346,7 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          let abbreviatedTag = tagMap.get(currentTag);
+          let abbreviatedTag = tagMap.get(currentTag); // Look up abbreviation from the full name
           
           if (currentInPerson && abbreviatedTag) {
             let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
@@ -390,28 +389,69 @@ function updateMeetingTag(e, isSingleEditMode) {
 
 /**
  * A robust helper to read a single setting from the "Config" sheet.
- * It finds the label in column A, then gets the value from column B.
  */
 function getConfig(label) {
   const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
   if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
   const finder = configSheet.createTextFinder(label).matchEntireCell(true).findNext();
   if (!finder) throw new Error(`Config label "${label}" not found in 'Config' sheet. Please add it to column A.`);
-  return finder.offset(0, 1).getValue(); // Get value from adjacent cell in column B.
+  return finder.offset(0, 1).getValue();
 }
 
 /**
  * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
+ * WHY THE CHANGE (v2.2.6): Now automatically builds a data validation dropdown for Column G
+ * and applies conditional formatting rules to color the "chips" based on the
+ * tag category from the "Tags" sheet.
  */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
     
     const lastRow = sheet.getLastRow();
+    
+    // --- Automatic Dropdown & Coloring (New in v2.2.6) ---
+    if (lastRow > 1 && configs.tagsData) {
+        const tagRange = sheet.getRange(2, 7, lastRow - 1, 1); // Column G
+        const tagNames = configs.tagsData.map(row => row[1]); // Get Full Name from Col C (index 1)
+        
+        // 1. Build the Data Validation (Dropdown) Rule
+        const dropdownRule = SpreadsheetApp.newDataValidation()
+            .requireValueInList(tagNames, true)
+            .setAllowInvalid(false) // Only allow values from the list
+            .build();
+        
+        tagRange.setDataValidation(dropdownRule);
+
+        // 2. Build the Conditional Formatting (Color) Rules
+        const greenColor = "#d4edbc";
+        const greyColor = "#e6e6e6";
+        const conditionalFormatRules = [];
+        
+        configs.tagsData.forEach(row => {
+            const category = row[0]; // Category from Col B (index 0)
+            const tagName = row[1];  // Full Name from Col C (index 1)
+            const color = (category === "Solutions Engineering") ? greenColor : greyColor;
+            
+            const rule = SpreadsheetApp.newConditionalFormatRule()
+                .whenTextEqualTo(tagName)
+                .setBackground(color)
+                .setRanges([tagRange])
+                .build();
+            conditionalFormatRules.push(rule);
+        });
+        
+        // Apply all new color rules (this will overwrite any old rules on this sheet)
+        sheet.setConditionalFormatRules(conditionalFormatRules);
+    }
+    // --- End of New Logic ---
+
     if (lastRow > 1) {
+        // Apply other formatting (dates, fonts)
         sheet.getRange(2, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
         sheet.getRange(2, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
         
+        // Color code the "External Attendees" column
         const extRange = sheet.getRange(2, 4, lastRow - 1, 1);
         const extValues = extRange.getValues();
         const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']);
@@ -421,6 +461,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("H2").setValue(new Date().toLocaleString());
     sheet.hideColumns(9, 3); // Hide columns I, J, and K.
 
+    // --- Row Coloring Logic ---
     const startRow = 2;
     if (configs.seTaggingMode) {
         if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
