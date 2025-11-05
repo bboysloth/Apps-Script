@@ -1,10 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.3.3
- * @description Critical UI Fixes.
- * 1. Replaced `sheet.clear()` with surgical clearing to PRESERVE colored chip formatting on refresh.
- * 2. Restricted red/yellow row coloring to Columns A:C only, preventing overwrite of D, E, F.
- * 3. Ensures 'Synced' column (H) formulas and formatting are applied correctly.
- * @version 2.3.3
+ * @file Meeting Tagger Tool v2.3.4
+ * @description Critical Bug Fix. The 'updateTagDropdownsAndColors' function now correctly
+ * syncs tag names and background colors, filtering out blank rows from BOTH lists
+ * to prevent dimension mismatch errors when writing to the helper sheet.
+ * @version 2.3.4
  */
 
 // =================================================================
@@ -86,6 +85,9 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
@@ -183,9 +185,8 @@ function findEventsMissingTag() {
             }
         }
         
-        // --- 5. Write Results (SURGICAL CLEAR - v2.3.3) ---
+        // --- 5. Write Results ---
         const sheet = file.getSheets()[0];
-        // Replaces sheet.clear() to preserve Conditional Formatting on Col G
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
@@ -206,7 +207,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -261,12 +262,12 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      const currentSeLead = rowData[4];  // E
-      const currentInPerson = rowData[5];// F
-      const currentTag = rowData[6];     // G
-      const originalSeLead = rowData[9]; // J
-      const originalInPerson = rowData[10];// K
-      const originalTag = rowData[11];   // L
+      const currentSeLead = rowData[4];
+      const currentInPerson = rowData[5];
+      const currentTag = rowData[6];
+      const originalSeLead = rowData[9];
+      const originalInPerson = rowData[10];
+      const originalTag = rowData[11];
 
       const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
@@ -340,26 +341,30 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     if (lastRow > 1) {
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
-        
-        // Col D Green/Null
         const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]));
     }
     
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
-    sheet.hideColumns(10, 3); // Hide J, K, L
+    sheet.hideColumns(10, 3);
 
-    // --- FIX: RESTRICT ROW COLORING TO A-C ---
+    if (lastRow > 1) {
+        const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
+        const rules = sheet.getConditionalFormatRules();
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
+        sheet.setConditionalFormatRules(rules);
+    }
+
     if (configs.seTaggingMode) {
-        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
+        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 6).setBackground('#fff2cc');
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
+            // Intentionally skipping Col G (7) and H (8) for row coloring here
         }
     }
-    // --- END FIX ---
-
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
@@ -417,28 +422,39 @@ function updateTagDropdownsAndColors() {
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheets()[0];
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Updating tag dropdowns...");
+    ss.toast("Updating tag dropdowns... please wait.");
 
     const tagRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-    const tagNames = tagRange.getValues().map(row => row[0]).filter(String);
-    const tagBackgrounds = tagRange.getBackgrounds();
+    const tagRawValues = tagRange.getValues();
+    const tagRawBackgrounds = tagRange.getBackgrounds();
+    const tagNames = [], tagColors = [];
+
+    // --- THIS IS THE FIX (v2.3.4) ---
+    // Filter OUT blank rows so names and colors stay synced and have same length.
+    for (let i = 0; i < tagRawValues.length; i++) {
+        if (tagRawValues[i][0] && tagRawValues[i][0].trim() !== "") {
+            tagNames.push([tagRawValues[i][0]]);
+            tagColors.push([tagRawBackgrounds[i][0]]);
+        }
+    }
+    // --- END OF FIX ---
+
     const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
-    
     dropdownRange.clearDataValidations();
     mainSheet.clearConditionalFormatRules();
 
     const helperSheetName = "_TagListHelper";
     let helperSheet = ss.getSheetByName(helperSheetName);
     if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
-    const helperData = tagNames.map(name => [name]);
-    if (helperData.length > 0) {
-        const helperRange = helperSheet.getRange(1, 1, helperData.length, 1);
-        helperRange.setValues(helperData);
-        helperRange.setBackgrounds(tagBackgrounds);
+
+    if (tagNames.length > 0) {
+        const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+        helperRange.setValues(tagNames);
+        helperRange.setBackgrounds(tagColors);
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
-    // RE-ADD Synced Column Formatting
+    // Re-add Synced column rules here too, as we cleared ALL rules above.
     const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     let rules = [];
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
@@ -451,28 +467,4 @@ function updateTagDropdownsAndColors() {
 function validateTagKeywords() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
-    if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Validating keywords...");
-
-    const tagsData = tagsSheet.getRange("C2:E" + tagsSheet.getLastRow()).getValues();
-    const tracker = new Map(), duplicates = new Map();
-
-    tagsData.forEach(row => {
-        if (row[0] && row[2]) {
-            row[2].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                if (tracker.has(k) && tracker.get(k) !== row[0]) {
-                    if (!duplicates.has(k)) duplicates.set(k, [tracker.get(k)]);
-                    duplicates.get(k).push(row[0]);
-                } else { tracker.set(k, row[0]); }
-            });
-        }
-    });
-
-    if (duplicates.size === 0) { ss.toast("Success! All keywords are unique."); }
-    else {
-        let msg = "Warning: Duplicate keywords found!\n";
-        for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
-        SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
-    }
-}
-// #endregion
+    if (!
