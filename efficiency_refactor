@@ -1,11 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.4.7
- * @description Dashboard Polish Update.
- * 1. FIXED: Explicitly removes old charts before generating new ones to prevent stacking.
- * 2. FIXED: Auto-resizes Column J so "Percentage" header isn't cut off.
- * 3. UPDATED: Pie chart width increased to 850px for better visibility.
- * 4. UPDATED: Percentage formula now shows "-" if a tag is hidden.
- * @version 2.4.7
+ * @file Meeting Tagger Tool v2.4.8
+ * @description UI Tweaks.
+ * 1. Reduced Pie Chart width to 700px to prevent overlap with the data table.
+ * 2. Explicitly set Column J width to 120px to ensure "Percentage" header fits.
+ * @version 2.4.8
  */
 
 // =================================================================
@@ -89,6 +87,9 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
@@ -215,7 +216,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -357,6 +358,22 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
 
+    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const helperSheetName = "_TagListHelper";
+        let helperSheet = ss.getSheetByName(helperSheetName);
+        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
+        const tagNames = configs.tagsData.map(row => [row[1]]);
+        if (tagNames.length > 0) {
+            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+            helperRange.setValues(tagNames);
+            helperRange.setBackgrounds(configs.tagBackgrounds); 
+            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
+            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
+        }
+    }
+
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
         const rules = sheet.getConditionalFormatRules();
@@ -366,11 +383,11 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     }
 
     if (configs.seTaggingMode) {
-        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
+        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 6).setBackground('#fff2cc');
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
         }
     }
     if (fullyTaggedMeetings.length > 0) {
@@ -380,7 +397,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 }
 
 // =================================================================
-// #region 5. DYNAMIC QUARTER, ADMIN & VISUALS FUNCTIONS
+// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS
 // =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -450,12 +467,22 @@ function updateTagDropdownsAndColors() {
     const helperSheetName = "_TagListHelper";
     let helperSheet = ss.getSheetByName(helperSheetName);
     if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
     if (tagNames.length > 0) {
         const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
         helperRange.setValues(tagNames);
         helperRange.setBackgrounds(tagColors);
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
+
+    // RE-ADD Synced Column Formatting
+    const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
+    mainSheet.clearConditionalFormatRules();
+    let rules = [];
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
+    mainSheet.setConditionalFormatRules(rules);
+
     ss.toast("Tag dropdowns and colors updated.");
 }
 
@@ -487,6 +514,10 @@ function validateTagKeywords() {
     }
 }
 
+// =================================================================
+// #region 6. DASHBOARD FUNCTIONS
+// =================================================================
+
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheets()[0];
@@ -494,7 +525,6 @@ function generateDashboard() {
   let visualsSheet = ss.getSheetByName(visualsSheetName);
   if (!visualsSheet) { visualsSheet = ss.insertSheet(visualsSheetName); } 
   else { 
-      // --- FIX: EXPLICIT CHART REMOVAL ---
       visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
       visualsSheet.clear(); 
   }
@@ -544,7 +574,6 @@ function generateDashboard() {
     const numRows = sortedTags.length;
     const formulas = [];
     for (let i = 7; i < 7 + numRows; i++) {
-        // FIX: Formula now shows "-" if hidden
         formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]);
     }
     visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%");
@@ -560,11 +589,11 @@ function generateDashboard() {
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
-      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#ffffff', '#34545e', '#959ea7', '#de6662'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 14, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
-      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 400).setOption('width', 850).setPosition(6, 1, 0, 0).build(); // Width increased to 850
+      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: '#000000' }) // FIXED: changed to black for better visibility on light slices
+      .setOption('height', 400).setOption('width', 700).setPosition(6, 1, 0, 0).build();
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A6").setValue("No tagged meetings found."); }
 
@@ -573,8 +602,8 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  // FIX: Resizing 4 columns to include J
-  visualsSheet.autoResizeColumns(7, 4);
+  visualsSheet.setColumnWidth(10, 120);
+  visualsSheet.autoResizeColumns(7, 3);
   ss.setActiveSheet(visualsSheet);
 }
 // #endregion
