@@ -1,10 +1,11 @@
 /**
- * @file Meeting Tagger Tool v2.4.6
- * @description Dashboard Feature Update.
- * Adds a "Percentage" column (J) to the interactive tag table.
- * Uses live SUMIF formulas so percentages automatically recalculate
- * when tags are hidden via the checkboxes.
- * @version 2.4.6
+ * @file Meeting Tagger Tool v2.4.7
+ * @description Dashboard Polish Update.
+ * 1. FIXED: Explicitly removes old charts before generating new ones to prevent stacking.
+ * 2. FIXED: Auto-resizes Column J so "Percentage" header isn't cut off.
+ * 3. UPDATED: Pie chart width increased to 850px for better visibility.
+ * 4. UPDATED: Percentage formula now shows "-" if a tag is hidden.
+ * @version 2.4.7
  */
 
 // =================================================================
@@ -88,11 +89,7 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
-        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-        const tagBackgrounds = tagColorRange.getBackgrounds();
-        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
-        
         const keywordMap = new Map();
         tagsData.forEach(row => {
             if (row[1] && row[3]) {
@@ -218,7 +215,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -360,22 +357,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
 
-    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
-        const ss = SpreadsheetApp.getActiveSpreadsheet();
-        const helperSheetName = "_TagListHelper";
-        let helperSheet = ss.getSheetByName(helperSheetName);
-        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
-
-        const tagNames = configs.tagsData.map(row => [row[1]]);
-        if (tagNames.length > 0) {
-            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
-            helperRange.setValues(tagNames);
-            helperRange.setBackgrounds(configs.tagBackgrounds); 
-            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
-            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
-        }
-    }
-
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
         const rules = sheet.getConditionalFormatRules();
@@ -430,6 +411,7 @@ function updateQuarterDropdown() {
   const finder = configSheet.createTextFinder("QuarterOverride").matchEntireCell(true).findNext();
   if (!finder) { ss.toast("Error: Label 'QuarterOverride' not found."); return; }
   
+  const dropdownCell = finder.offset(0, 1);
   let quarters = ["None"];
   let today = new Date();
   for (let i = 0; i < 5; i++) {
@@ -511,7 +493,11 @@ function generateDashboard() {
   const visualsSheetName = "Visuals";
   let visualsSheet = ss.getSheetByName(visualsSheetName);
   if (!visualsSheet) { visualsSheet = ss.insertSheet(visualsSheetName); } 
-  else { visualsSheet.clear(); }
+  else { 
+      // --- FIX: EXPLICIT CHART REMOVAL ---
+      visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
+      visualsSheet.clear(); 
+  }
   
   visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
   
@@ -558,7 +544,8 @@ function generateDashboard() {
     const numRows = sortedTags.length;
     const formulas = [];
     for (let i = 7; i < 7 + numRows; i++) {
-        formulas.push([`=I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I)`]);
+        // FIX: Formula now shows "-" if hidden
+        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]);
     }
     visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%");
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 4).setBorder(true, true, true, true, true, true);
@@ -577,7 +564,7 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 14, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 400).setOption('width', 600).setPosition(6, 1, 0, 0).build();
+      .setOption('height', 400).setOption('width', 850).setPosition(6, 1, 0, 0).build(); // Width increased to 850
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A6").setValue("No tagged meetings found."); }
 
@@ -586,6 +573,7 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
+  // FIX: Resizing 4 columns to include J
   visualsSheet.autoResizeColumns(7, 4);
   ss.setActiveSheet(visualsSheet);
 }
