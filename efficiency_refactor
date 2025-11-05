@@ -1,25 +1,35 @@
 /**
- * @file Meeting Tagger Tool v2.2.14
- * @description This is the definitive fix for the colored chip and row coloring conflict.
- * The `findEventsMissingTag` function no longer uses `sheet.clear()`. Instead, it
- * surgically clears *only* the content, old backgrounds, and font styles,
- * which PRESERVES the conditional formatting rules set by the admin function.
- * @version 2.2.14
+ * @file Meeting Tagger Tool v2.3.0
+ * @description This version introduces a major new feature: "Auto-Tagging by Keyword."
+ * The script now reads a new "Keywords" column (Column E) from the "Tags" sheet.
+ * When a meeting with NO tag is found, it scans the title and description for
+ * these keywords. If a match is found, it pre-populates the "Add Tag to Meeting"
+ * dropdown with the corresponding tag.
+ *
+ * A new admin tool, "Config: Validate Tag Keywords," is also added to check for
+ * duplicate keywords in the "Tags" sheet.
+ *
+ * @version 2.3.0
  */
 
 // =================================================================
 // #region 1. SPREADSHEET UI & MENU CREATION
 // =================================================================
 
+/**
+ * Runs automatically when the spreadsheet is opened. Creates the "Meeting Tools" custom menu.
+ * WHY THE CHANGE (v2.3.0): Added new "Config: Validate Tag Keywords" menu item.
+ */
 function onOpen() {
   SpreadsheetApp.getUi()
       .createMenu('Meeting Tools')
       .addItem('Refresh Untagged List', 'findEventsMissingTag')
-      .addSeparator()
+      .addSeparator() // A visual dividing line in the menu.
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
       .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords') // NEW
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
@@ -29,14 +39,25 @@ function onOpen() {
 // #region 2. SCRIPT ENTRY POINTS (USER-TRIGGERED ACTIONS)
 // =================================================================
 
+/**
+ * Listens for any single edit made on the sheet for simple visual feedback.
+ * @param {Object} e The event object passed by the onEdit trigger.
+ */
 function handleEdit(e) {
   updateMeetingTag(e, true); 
 }
 
+/**
+ * Runs when the user clicks "Apply Changes to Calendar" from the menu.
+ */
 function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
 
+/**
+ * Runs when "Save/Run Config" is triggered. Fix includes SpreadsheetApp.flush()
+ * to prevent race conditions when run from a sheet button.
+ */
 function saveConfigAndRun() {
   try {
     SpreadsheetApp.flush();
@@ -69,9 +90,11 @@ function saveConfigAndRun() {
 
 /**
  * The main data-gathering function.
- * WHY THE CHANGE (v2.2.14): Replaced `sheet.clear()` with a surgical
- * clear of content and old formatting. This preserves the conditional
- * formatting rules for the Column G chips.
+ * WHY THE CHANGE (v2.3.0):
+ * 1. Now reads Column E ("Keywords") from the "Tags" sheet.
+ * 2. Builds a new 'keywordMap' for fast, in-memory lookups.
+ * 3. If a meeting has NO tag, it scans the title/description for keywords and
+ * auto-populates the "Add Tag to Meeting" column (fullTagName) if a match is found.
  */
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
@@ -94,9 +117,31 @@ function findEventsMissingTag() {
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsDataRange = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow());
-        const tagsData = tagsDataRange.getValues(); // [FullName, Abbreviation]
-        const tagMap = new Map(tagsData.map(row => [row[1].trim().replace(";", ""), row[0]])); // Abbr -> FullName
+        // Read B, C, D, and E (Category, FullName, Abbreviation, Keywords)
+        const tagsDataRange = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow());
+        const tagsData = tagsDataRange.getValues();
+        
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
+        // Build the map for looking up FullName from Abbreviation
+        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
+        
+        // --- NEW (v2.3.0): Build the Keyword-to-FullName map ---
+        const keywordMap = new Map();
+        tagsData.forEach(row => {
+            const fullName = row[1]; // e.g., "Project Scoping"
+            const keywordsString = row[3]; // e.g., "scoping,technical dive"
+            if (fullName && keywordsString) {
+                const keywords = keywordsString.split(',').map(k => k.trim().toLowerCase()).filter(String);
+                keywords.forEach(keyword => {
+                    if (keyword) {
+                        keywordMap.set(keyword, fullName);
+                    }
+                });
+            }
+        });
+        // --- END OF NEW LOGIC ---
         
         // --- 3. DATE LOGIC "CONTROL SWITCH" ---
         let start, end;
@@ -179,6 +224,7 @@ function findEventsMissingTag() {
             let hasSETagInDescription = false; 
 
             if (hasMainTag) {
+                // --- This meeting already has a tag. Parse it normally. ---
                 const lines = description.split('\n');
                 const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
                 if (tagLine) {
@@ -188,6 +234,17 @@ function findEventsMissingTag() {
                     let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
                     fullTagName = tagMap.get(lookupKey) || "";
                 }
+            } else {
+                // --- NEW (v2.3.0): Auto-Tag Logic ---
+                // This meeting has NO tag. Let's try to find one.
+                const searchText = (title + ' ' + description).toLowerCase();
+                for (const keyword of keywordMap.keys()) {
+                    if (searchText.includes(keyword)) {
+                        fullTagName = keywordMap.get(keyword); // Assign the pre-selected tag
+                        break; // Stop at the first match
+                    }
+                }
+                // --- END OF NEW LOGIC ---
             }
             
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
@@ -212,29 +269,14 @@ function findEventsMissingTag() {
         
         // --- 6. Write all results to the sheet ---
         const sheet = file.getSheets()[0];
-        
-        // --- THIS IS THE FIX (v2.2.14) ---
-        // Instead of `sheet.clear()`, we surgically clear the old data and row-level
-        // formats, but leave Data Validation and Conditional Formatting rules intact.
-        if (sheet.getLastRow() > 1) {
-            const rangeToClear = sheet.getRange(2, 1, sheet.getMaxRows() - 1, sheet.getMaxColumns());
-            rangeToClear.clearContent();
-            rangeToClear.setBackground(null);
-            rangeToClear.setFontLine(null);
-        }
-        // --- END OF FIX ---
-        
+        sheet.clear();
         const headers = [
             "Title", "Start Time", "Created By", "External Attendees", 
             "SE Lead", "In Person", "Add Tag to Meeting",
             "Last Refreshed",
             "Original SE Lead", "Original In Person", "Original Tag"
         ];
-        // We only set headers if the sheet was completely empty (which it won't be, but good practice)
-        if (sheet.getLastRow() === 0) {
-            sheet.appendRow(headers);
-        }
-        
+        sheet.appendRow(headers);
         const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
         
         if (finalList.length > 0) {
@@ -247,7 +289,9 @@ function findEventsMissingTag() {
         const configObject = { 
           seTaggingMode, 
           showTaggedMeetings, 
-          externalFilter
+          externalFilter, 
+          tagsData: tagsData,
+          tagBackgrounds: tagBackgrounds
         };
         _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configObject);
         
@@ -410,9 +454,7 @@ function getConfig(label) {
 
 /**
  * A helper function that applies all visual formatting to the "Untagged Meetings" sheet.
- * WHY THE CHANGE (v2.2.14): This function is now fast. It no longer builds
- * dropdowns. It only applies essential formats and the "smart" row-coloring
- * logic that avoids conflicts with Column D and Column G.
+ * This is the definitive "smart" formatting function that avoids conflicts.
  */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     // --- 1. Standard Formatting ---
@@ -426,10 +468,9 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
         
-        // --- FIX for Col D (v2.2.13) ---
+        // Col D: Green for TRUE, No Fill for FALSE
         const extRange = sheet.getRange(startRow, 4, lastRow - 1, 1);
         const extValues = extRange.getValues();
-        // Sets green for TRUE and null (no fill) for FALSE
         const extColors = extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]); 
         extRange.setBackgrounds(extColors);
     }
@@ -437,8 +478,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("H2").setValue(new Date().toLocaleString());
     sheet.hideColumns(9, 3); // Hide columns I, J, and K.
     
-    // --- 2. Row Coloring Logic (THE DEFINITIVE FIX) ---
-    // This logic is now "smart" and skips Column D (index 4) and Column G (index 7).
+    // --- 2. Row Coloring Logic (Skips Column G & D) ---
     if (configs.seTaggingMode) {
         if (noTagMeetings.length > 0) {
             // Apply red ONLY to A-C
@@ -459,7 +499,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
             sheet.getRange(startRow, 8, noTagMeetings.length, 1).setBackground('#f4cccc');
         }
     }
-    // --- End of Fix ---
 
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
@@ -546,7 +585,7 @@ function updateQuarterDropdown() {
 }
 
 /**
- * NEW (v2.2.11+): A one-time setup function run from the "Config" menu.
+ * NEW (v2.3.0): A one-time setup function run from the "Config" menu.
  * This function builds the colored dropdowns for Column G using the correct
  * conditional formatting method. This is the only way to create colored chips
  * that pull colors from another sheet.
@@ -601,5 +640,63 @@ function updateTagDropdownsAndColors() {
     mainSheet.setConditionalFormatRules(conditionalFormatRules);
 
     ss.toast("Tag dropdowns and chip colors have been updated for Column G.");
+}
+
+/**
+ * NEW (v2.3.0): A separate admin tool to validate the "Keywords" column (E)
+ * in the "Tags" sheet to ensure no keyword is used for more than one tag.
+ */
+function validateTagKeywords() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tagsSheet = ss.getSheetByName("Tags");
+    if (!tagsSheet) {
+        ss.toast("Error: 'Tags' sheet not found.");
+        return;
+    }
+
+    ss.toast("Validating keywords in 'Tags' sheet...");
+
+    // Read the data from columns C (Full Name) and E (Keywords)
+    const tagsData = tagsSheet.getRange("C2:E" + tagsSheet.getLastRow()).getValues();
+    const keywordTracker = new Map();
+    const duplicates = new Map();
+
+    tagsData.forEach(row => {
+        const fullName = row[0]; // Data is from C:E, so C is index 0
+        const keywordsString = row[2]; // E is index 2
+
+        if (fullName && keywordsString) {
+            const keywords = keywordsString.split(',').map(k => k.trim().toLowerCase()).filter(String);
+            
+            keywords.forEach(keyword => {
+                if (keywordMap.has(keyword)) {
+                    // This keyword has been seen before.
+                    const existingTag = keywordTracker.get(keyword);
+                    if (existingTag !== fullName) {
+                        // It's a duplicate used by a *different* tag.
+                        if (!duplicates.has(keyword)) {
+                            duplicates.set(keyword, [existingTag]);
+                        }
+                        duplicates.get(keyword).push(fullName);
+                    }
+                } else {
+                    // First time seeing this keyword.
+                    keywordTracker.set(keyword, fullName);
+                }
+            });
+        }
+    });
+
+    if (duplicates.size === 0) {
+        ss.toast("Success! All keywords are unique.");
+    } else {
+        // Build a readable error message
+        let alertMessage = "Warning: Duplicate keywords found! This will cause inconsistent auto-tagging. Please ensure each keyword is unique.\n";
+        for (const [keyword, tags] of duplicates.entries()) {
+            const tagList = [...new Set(tags)].join(', '); // Get unique tag names
+            alertMessage += `\n- Keyword: "${keyword}"\n  Used by: ${tagList}\n`;
+        }
+        SpreadsheetApp.getUi().alert("Keyword Validation Failed", alertMessage, SpreadsheetApp.getUi().ButtonSet.OK);
+    }
 }
 // #endregion
