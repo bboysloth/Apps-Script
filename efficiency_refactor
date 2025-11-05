@@ -1,10 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.4.0
+ * @file Meeting Tagger Tool v2.4.1
  * @description NEW FEATURE: Visuals Dashboard.
  * Adds a 'Generate Dashboard' function that reads the current data from the
  * 'Untagged Meetings' sheet and creates a summary report on a new 'Visuals' sheet.
  * This is a read-only operation that does not affect core data.
- * @version 2.4.0
+ * @version 2.4.1
  */
 
 // =================================================================
