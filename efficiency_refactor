@@ -1,10 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.4.5
- * @description Dashboard Visual Refinements.
- * 1. Scorecard conditional formatting now includes BOLD text.
- * 2. Pie chart color palette strictly curated to user's preferred aesthetic (blues/greys/muted reds).
- * 3. Pie slice text set to white for better contrast on darker palette.
- * @version 2.4.5
+ * @file Meeting Tagger Tool v2.4.6
+ * @description Dashboard Feature Update.
+ * Adds a "Percentage" column (J) to the interactive tag table.
+ * Uses live SUMIF formulas so percentages automatically recalculate
+ * when tags are hidden via the checkboxes.
+ * @version 2.4.6
  */
 
 // =================================================================
@@ -360,6 +360,22 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
 
+    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const helperSheetName = "_TagListHelper";
+        let helperSheet = ss.getSheetByName(helperSheetName);
+        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
+        const tagNames = configs.tagsData.map(row => [row[1]]);
+        if (tagNames.length > 0) {
+            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+            helperRange.setValues(tagNames);
+            helperRange.setBackgrounds(configs.tagBackgrounds); 
+            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
+            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
+        }
+    }
+
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
         const rules = sheet.getConditionalFormatRules();
@@ -383,7 +399,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 }
 
 // =================================================================
-// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS
+// #region 5. DYNAMIC QUARTER, ADMIN & VISUALS FUNCTIONS
 // =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -414,7 +430,6 @@ function updateQuarterDropdown() {
   const finder = configSheet.createTextFinder("QuarterOverride").matchEntireCell(true).findNext();
   if (!finder) { ss.toast("Error: Label 'QuarterOverride' not found."); return; }
   
-  const dropdownCell = finder.offset(0, 1);
   let quarters = ["None"];
   let today = new Date();
   for (let i = 0; i < 5; i++) {
@@ -490,10 +505,6 @@ function validateTagKeywords() {
     }
 }
 
-// =================================================================
-// #region 6. VISUALS DASHBOARD FUNCTIONS
-// =================================================================
-
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheets()[0];
@@ -538,12 +549,19 @@ function generateDashboard() {
   visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
   visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
   visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
+  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
     visualsSheet.getRange(7, 8, sortedTags.length, 2).setValues(sortedTags);
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
-    visualsSheet.getRange(6, 7, sortedTags.length + 1, 3).setBorder(true, true, true, true, true, true);
+    const numRows = sortedTags.length;
+    const formulas = [];
+    for (let i = 7; i < 7 + numRows; i++) {
+        formulas.push([`=I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I)`]);
+    }
+    visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%");
+    visualsSheet.getRange(6, 7, sortedTags.length + 1, 4).setBorder(true, true, true, true, true, true);
   }
 
   visualsSheet.getRange("K6").setValue("Chart Source (Hidden)").setFontStyle("italic");
@@ -568,7 +586,7 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.autoResizeColumns(7, 3);
+  visualsSheet.autoResizeColumns(7, 4);
   ss.setActiveSheet(visualsSheet);
 }
 // #endregion
