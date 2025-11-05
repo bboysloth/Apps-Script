@@ -1,12 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.3.10
- * @description Feature & Bug Fix Update.
- * 1. RESTORED missing 'Validate Tag Keywords' menu item.
- * 2. RENAMED formatting reset menu item for clarity.
- * 3. CHANGED 'Start Time' column to left alignment.
- * 4. ADDED conflict detection to auto-tagger: keywords used by multiple tags
- * will now be ignored during auto-tagging to prevent errors.
- * @version 2.3.10
+ * @file Meeting Tagger Tool v2.4.0
+ * @description NEW FEATURE: Visuals Dashboard.
+ * Adds a 'Generate Dashboard' function that reads the current data from the
+ * 'Untagged Meetings' sheet and creates a summary report on a new 'Visuals' sheet.
+ * This is a read-only operation that does not affect core data.
+ * @version 2.4.0
  */
 
 // =================================================================
@@ -19,10 +17,10 @@ function onOpen() {
       .addSeparator()
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
+      .addItem('Generate Dashboard', 'generateDashboard') // NEW
+      .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      // Renamed as requested
       .addItem('Config: Reset Untagged Meeting Sheet Formatting', 'resetSheetFormatting')
-      // Restored missing item
       .addItem('Config: Validate Auto-Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
@@ -92,12 +90,10 @@ function findEventsMissingTag() {
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         
-        // --- NEW: SMART KEYWORD MAP (Detects Conflicts) ---
         const keywordMap = new Map();
         tagsData.forEach(row => {
             if (row[1] && row[3]) {
                 row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                    // If keyword already exists AND points to a different tag, flag it as CONFLICT
                     if (keywordMap.has(k) && keywordMap.get(k) !== row[1] && keywordMap.get(k) !== "CONFLICT") {
                         keywordMap.set(k, "CONFLICT");
                     } else if (!keywordMap.has(k)) {
@@ -106,7 +102,6 @@ function findEventsMissingTag() {
                 });
             }
         });
-        // --------------------------------------------------
         
         // --- 2. Date Logic ---
         let start, end;
@@ -168,18 +163,15 @@ function findEventsMissingTag() {
                     suggestedTag = originalTag;
                 }
             } else {
-                // --- NEW: SMART AUTO-TAGGER ---
                 const searchText = (title + ' ' + description).toLowerCase();
                 for (const [keyword, fullName] of keywordMap.entries()) {
-                    // Only auto-tag if we found a match AND it's not a conflicted keyword
                     if (searchText.includes(keyword)) {
                         if (fullName !== "CONFLICT") {
                              suggestedTag = fullName;
                         }
-                        break; // Stop after first keyword match (even if conflicted)
+                        break;
                     }
                 }
-                // ------------------------------
             }
             
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
@@ -356,10 +348,8 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     const lastRow = sheet.getLastRow();
     const startRow = 2;
     if (lastRow > 1) {
-        // FIX: Left alignment for Start Time (Col 2)
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("left");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
-        
         const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]));
     }
@@ -381,7 +371,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-            // Skipped Col G and H to avoid overwrite
         }
     }
     if (fullyTaggedMeetings.length > 0) {
@@ -506,5 +495,93 @@ function validateTagKeywords() {
         for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
         SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
     }
+}
+
+/**
+ * NEW FUNCTION: Generates the Visuals Dashboard.
+ * Reads data from the "Untagged Meetings" sheet and creates summary tables
+ * on a new "Visuals" sheet.
+ */
+function generateDashboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dataSheet = ss.getSheets()[0]; // Assumes Untagged Meetings is first
+  const visualsSheetName = "Visuals";
+  let visualsSheet = ss.getSheetByName(visualsSheetName);
+  
+  if (!visualsSheet) {
+    visualsSheet = ss.insertSheet(visualsSheetName);
+  } else {
+    visualsSheet.clear();
+  }
+  
+  // Read all data from Untagged Meetings sheet
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) {
+    SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet to generate dashboard.");
+    return;
+  }
+  const data = dataSheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  
+  // Initialize counters
+  let totalMeetings = 0;
+  let externalMeetings = 0;
+  let internalMeetings = 0;
+  let seLeadMeetings = 0;
+  let inPersonMeetings = 0;
+  const tagCounts = new Map();
+
+  // Loop through data and tally metrics
+  data.forEach(row => {
+    totalMeetings++;
+    // Column D (index 3) is External Attendees (TRUE/FALSE)
+    if (row[3] === true) {
+      externalMeetings++;
+    } else {
+      internalMeetings++;
+    }
+    // Column E (index 4) is SE Lead
+    if (row[4] === true) {
+      seLeadMeetings++;
+    }
+    // Column F (index 5) is In Person
+    if (row[5] === true) {
+      inPersonMeetings++;
+    }
+    // Column G (index 6) is Tag Name
+    const tagName = row[6];
+    if (tagName && tagName.trim() !== "") {
+      tagCounts.set(tagName, (tagCounts.get(tagName) || 0) + 1);
+    }
+  });
+
+  // Prepare data for writing to Visuals sheet
+  const scorecardData = [
+    ["Metric", "Count"],
+    ["Total Meetings", totalMeetings],
+    ["External Meetings", externalMeetings],
+    ["Internal Meetings", internalMeetings],
+    ["SE Lead Meetings", seLeadMeetings],
+    ["In Person Meetings", inPersonMeetings]
+  ];
+  
+  const tagTableData = [["Tag Name", "Count"]];
+  // Sort tags by count descending
+  const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
+  sortedTags.forEach(([tag, count]) => {
+    tagTableData.push([tag, count]);
+  });
+
+  // Write tables to Visuals sheet
+  visualsSheet.getRange(1, 1).setValue(`Dashboard Generated: ${new Date().toLocaleString()}`).setFontWeight("bold");
+  
+  visualsSheet.getRange(3, 1, scorecardData.length, 2).setValues(scorecardData);
+  visualsSheet.getRange(3, 1, 1, 2).setFontWeight("bold").setBackground("#f3f3f3"); // Header style
+  
+  visualsSheet.getRange(3, 4, tagTableData.length, 2).setValues(tagTableData);
+  visualsSheet.getRange(3, 4, 1, 2).setFontWeight("bold").setBackground("#f3f3f3"); // Header style
+
+  // Basic formatting for readability
+  visualsSheet.autoResizeColumns(1, 5);
+  ss.setActiveSheet(visualsSheet);
 }
 // #endregion
