@@ -1,12 +1,12 @@
 /**
- * @file Meeting Tagger Tool v2.3.8
+ * @file Meeting Tagger Tool v2.3.10
  * @description Feature & Bug Fix Update.
  * 1. RESTORED missing 'Validate Tag Keywords' menu item.
  * 2. RENAMED formatting reset menu item for clarity.
  * 3. CHANGED 'Start Time' column to left alignment.
  * 4. ADDED conflict detection to auto-tagger: keywords used by multiple tags
  * will now be ignored during auto-tagging to prevent errors.
- * @version 2.3.8
+ * @version 2.3.10
  */
 
 // =================================================================
