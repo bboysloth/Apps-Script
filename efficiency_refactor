@@ -1,11 +1,11 @@
 /**
- * @file Meeting Tagger Tool v2.4.3
- * @description FEATURE UPDATE: Visuals Dashboard (Horizontal Layout).
- * 1. Core logic matches stable v2.3.10 (includes auto-tag conflicts & perf fixes).
- * 2. Dashboard scorecards are now arranged horizontally (Rows 3-4).
- * 3. 3D Pie Chart is anchored at A6.
- * 4. Interactive Tag table is anchored at G6.
- * @version 2.4.3
+ * @file Meeting Tagger Tool v2.4.4
+ * @description Visual Dashboard Refinements.
+ * 1. Scorecard values now have conditional font coloring (<100 Green, 100-150 Yellow, >150 Red).
+ * 2. Table headers now use custom blue (#3c9fd2).
+ * 3. Pie chart now displays percentages instead of raw values.
+ * 4. Fixed issue with extra checkboxes appearing in the tag table.
+ * @version 2.4.4
  */
 
 // =================================================================
@@ -89,9 +89,11 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         
-        // Keyword Map with Conflict Detection (v2.3.10 logic)
         const keywordMap = new Map();
         tagsData.forEach(row => {
             if (row[1] && row[3]) {
@@ -196,7 +198,7 @@ function findEventsMissingTag() {
             }
         }
         
-        // --- 5. Write Results (Surgical Clear) ---
+        // --- 5. Write Results ---
         const sheet = file.getSheets()[0];
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
@@ -217,7 +219,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -352,14 +354,28 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     if (lastRow > 1) {
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("left");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
-        
-        const extRange = sheet.getRange(startRow, 4, lastRow - 1, 1);
-        const extValues = extRange.getValues();
+        const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]));
     }
     
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
+
+    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const helperSheetName = "_TagListHelper";
+        let helperSheet = ss.getSheetByName(helperSheetName);
+        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
+        const tagNames = configs.tagsData.map(row => [row[1]]);
+        if (tagNames.length > 0) {
+            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+            helperRange.setValues(tagNames);
+            helperRange.setBackgrounds(configs.tagBackgrounds); 
+            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
+            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
+        }
+    }
 
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
@@ -384,7 +400,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 }
 
 // =================================================================
-// #region 5. DYNAMIC QUARTER, ADMIN & VISUALS FUNCTIONS
+// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS
 // =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -434,7 +450,7 @@ function updateTagDropdownsAndColors() {
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheets()[0];
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Updating tag dropdowns... please wait.");
+    ss.toast("Updating tag dropdowns...");
 
     const lastTagRow = tagsSheet.getLastRow();
     const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
@@ -515,20 +531,25 @@ function generateDashboard() {
   });
   let internal = total - external;
 
-  // HORIZONTAL SCORECARDS (Rows 3-4)
   const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
   const scorecardValues = [total, external, internal, seLead, inPerson];
   let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
-      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#f3f3f3").setBorder(true, true, true, true, true, true);
+      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#3c9fd2").setFontColor("white").setBorder(true, true, true, true, true, true);
       visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-      currentCol += 2; // Move two columns right for the next scorecard
+      currentCol += 2;
   }
+  const scRange = visualsSheet.getRange(4, 1, 1, 10);
+  const scRules = [
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setRanges([scRange]).build()
+  ];
+  visualsSheet.setConditionalFormatRules(scRules);
 
-  // INTERACTIVE TAG TABLE (Starts at G6)
-  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#f3f3f3");
-  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#f3f3f3");
-  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#f3f3f3");
+  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
+  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
+  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
@@ -537,16 +558,14 @@ function generateDashboard() {
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 3).setBorder(true, true, true, true, true, true);
   }
 
-  // HIDDEN CHART SOURCE (Starts at K6)
   visualsSheet.getRange("K6").setValue("Chart Source (Hidden)").setFontStyle("italic");
   visualsSheet.getRange("K7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
   visualsSheet.hideColumns(11, 2); 
 
-  // 3D PIE CHART (Anchored at A6)
   if (sortedTags.length > 0) {
     const chartRange = visualsSheet.getRange("K7:L" + (7 + sortedTags.length));
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
-      .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'value').setOption('legend', { position: 'right' })
+      .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
       .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#ffffff', '#34545e', '#959ea7', '#de6662'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 14, bold: true })
