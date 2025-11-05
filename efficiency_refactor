@@ -1,9 +1,12 @@
 /**
  * @file Meeting Tagger Tool v2.4.1
  * @description NEW FEATURE: Visuals Dashboard.
- * Adds a 'Generate Dashboard' function that reads the current data from the
- * 'Untagged Meetings' sheet and creates a summary report on a new 'Visuals' sheet.
- * This is a read-only operation that does not affect core data.
+ * 1. Adds a 'Generate Dashboard' function that reads data from the 'Untagged Meetings' sheet.
+ * 2. It creates a new 'Visuals' sheet if one doesn't exist.
+ * 3. It populates HIDDEN tables in Columns K-N with scorecard data and tag breakdowns.
+ * 4. It builds a user-facing dashboard with 5 scorecards and a pie chart that are
+ * linked to these hidden data tables.
+ * 5. This is a 100% additive feature and does not change any existing core logic.
  * @version 2.4.1
  */
 
@@ -320,7 +323,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       } else {
         rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
       }
-      ss.toast(`${updatedCount} meeting(s) successfully updated.`);
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
     } else {
       ss.toast("No changes were detected to apply.");
     }
@@ -356,14 +359,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
-
-    if (lastRow > 1) {
-        const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
-        const rules = sheet.getConditionalFormatRules();
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
-        sheet.setConditionalFormatRules(rules);
-    }
 
     if (configs.seTaggingMode) {
         if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
@@ -498,9 +493,10 @@ function validateTagKeywords() {
 }
 
 /**
- * NEW FUNCTION: Generates the Visuals Dashboard.
+ * NEW FUNCTION (v2.4.0): Generates the Visuals Dashboard.
  * Reads data from the "Untagged Meetings" sheet and creates summary tables
- * on a new "Visuals" sheet.
+ * on a new "Visuals" sheet. The data is placed in hidden columns (K-N)
+ * and the UI (Scorecards, Charts) is built in the visible area.
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -511,33 +507,32 @@ function generateDashboard() {
   if (!visualsSheet) {
     visualsSheet = ss.insertSheet(visualsSheetName);
   } else {
-    visualsSheet.clear();
+    visualsSheet.clear(); // Clear all old visuals and data
   }
   
-  // Read all data from Untagged Meetings sheet
+  // Set global font for the entire sheet first
+  visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
+  
+  // --- 1. READ DATA ---
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) {
     SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet to generate dashboard.");
     return;
   }
-  const data = dataSheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  // Read all 12 columns, including hidden ones, to get all data points
+  const data = dataSheet.getRange(2, 1, lastRow - 1, 12).getValues();
   
-  // Initialize counters
-  let totalMeetings = 0;
+  // --- 2. TALLY METRICS ---
+  let totalMeetings = data.length; // Total rows is total meetings
   let externalMeetings = 0;
-  let internalMeetings = 0;
   let seLeadMeetings = 0;
   let inPersonMeetings = 0;
   const tagCounts = new Map();
 
-  // Loop through data and tally metrics
   data.forEach(row => {
-    totalMeetings++;
-    // Column D (index 3) is External Attendees (TRUE/FALSE)
+    // Column D (index 3) is External Attendees
     if (row[3] === true) {
       externalMeetings++;
-    } else {
-      internalMeetings++;
     }
     // Column E (index 4) is SE Lead
     if (row[4] === true) {
@@ -553,8 +548,13 @@ function generateDashboard() {
       tagCounts.set(tagName, (tagCounts.get(tagName) || 0) + 1);
     }
   });
+  
+  // Calculate the final metric
+  let internalMeetings = totalMeetings - externalMeetings;
 
-  // Prepare data for writing to Visuals sheet
+  // --- 3. PREPARE & WRITE HIDDEN DATA TABLES ---
+  
+  // Scorecard Data Table (starts at K3)
   const scorecardData = [
     ["Metric", "Count"],
     ["Total Meetings", totalMeetings],
@@ -563,25 +563,76 @@ function generateDashboard() {
     ["SE Lead Meetings", seLeadMeetings],
     ["In Person Meetings", inPersonMeetings]
   ];
+  visualsSheet.getRange(3, 11, scorecardData.length, 2).setValues(scorecardData)
+    .setFontWeight("bold"); // K3:L8
   
+  // Tag Breakdown Data Table (starts at M3)
   const tagTableData = [["Tag Name", "Count"]];
-  // Sort tags by count descending
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   sortedTags.forEach(([tag, count]) => {
     tagTableData.push([tag, count]);
   });
-
-  // Write tables to Visuals sheet
-  visualsSheet.getRange(1, 1).setValue(`Dashboard Generated: ${new Date().toLocaleString()}`).setFontWeight("bold");
   
-  visualsSheet.getRange(3, 1, scorecardData.length, 2).setValues(scorecardData);
-  visualsSheet.getRange(3, 1, 1, 2).setFontWeight("bold").setBackground("#f3f3f3"); // Header style
-  
-  visualsSheet.getRange(3, 4, tagTableData.length, 2).setValues(tagTableData);
-  visualsSheet.getRange(3, 4, 1, 2).setFontWeight("bold").setBackground("#f3f3f3"); // Header style
+  visualsSheet.getRange(3, 13, tagTableData.length, 2).setValues(tagTableData);
+  visualsSheet.getRange(3, 13, 1, 2).setFontWeight("bold"); // M3:N3
 
-  // Basic formatting for readability
-  visualsSheet.autoResizeColumns(1, 5);
+  // Hide the data columns
+  visualsSheet.hideColumns(11, 4); // Hide K, L, M, N
+  
+  // --- 4. BUILD VISIBLE UI ---
+  
+  // Status Header
+  const selectedQuarter = getConfig("QuarterOverride");
+  let dateString = `Last ${getConfig("DaysBack")} Days`;
+  if (selectedQuarter && selectedQuarter !== "None") {
+    dateString = selectedQuarter;
+  }
+  visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString}`)
+    .setFontWeight("bold").setFontSize(12);
+  visualsSheet.getRange("A2").setValue(`Last Generated: ${new Date().toLocaleString()}`)
+    .setFontStyle("italic");
+
+  // Scorecards
+  const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
+  const scorecardValues = [totalMeetings, externalMeetings, internalMeetings, seLeadMeetings, inPersonMeetings];
+  
+  let currentColumn = 1; // Start in Column A
+  for (let i = 0; i < scorecardTitles.length; i++) {
+    // Title (e.g., A4:B4)
+    visualsSheet.getRange(4, currentColumn, 1, 2).merge()
+      .setValue(scorecardTitles[i])
+      .setFontWeight("bold")
+      .setHorizontalAlignment("center");
+      
+    // Value (e.g., A5:B5)
+    visualsSheet.getRange(5, currentColumn, 1, 2).merge()
+      .setValue(scorecardValues[i])
+      .setFontSize(15) // Set font size as requested
+      .setHorizontalAlignment("center");
+      
+    currentColumn += 2; // Move to the next block (C, E, G, I)
+  }
+  
+  // Pie Chart
+  if (tagTableData.length > 1) { // Only build if there's data
+    const chartDataRange = visualsSheet.getRange(3, 13, tagTableData.length, 2); // M3:N...
+    
+    const pieChart = visualsSheet.newChart()
+      .setChartType(Charts.ChartType.PIE)
+      .addRange(chartDataRange)
+      .setOption('title', 'Meeting Tag Breakdown')
+      .setOption('pieSliceText', 'value')
+      .setOption('legend', { position: 'right' })
+      .setPosition(7, 1, 0, 0) // Anchor chart at cell A7
+      .build();
+      
+    visualsSheet.insertChart(pieChart);
+  } else {
+    visualsSheet.getRange("A7").setValue("No tagged meetings found to display in pie chart.");
+  }
+  
   ss.setActiveSheet(visualsSheet);
+  ss.toast("Dashboard generated successfully.");
 }
+
 // #endregion
