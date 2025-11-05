@@ -1,10 +1,12 @@
 /**
- * @file Meeting Tagger Tool v2.3.7
- * @description STABILITY FIX. Separated responsibilities to prevent conflicts.
- * 1. 'Config: Reset All Sheet Formatting' is now the ONLY function that manages Conditional Formatting.
- * It sets up both the colored chips (Col G) AND the Synced status rules (Col H).
- * 2. 'Refresh Untagged List' no longer touches Conditional Formatting, preventing crashes and overwrites.
- * @version 2.3.7
+ * @file Meeting Tagger Tool v2.3.8
+ * @description Feature & Bug Fix Update.
+ * 1. RESTORED missing 'Validate Tag Keywords' menu item.
+ * 2. RENAMED formatting reset menu item for clarity.
+ * 3. CHANGED 'Start Time' column to left alignment.
+ * 4. ADDED conflict detection to auto-tagger: keywords used by multiple tags
+ * will now be ignored during auto-tagging to prevent errors.
+ * @version 2.3.8
  */
 
 // =================================================================
@@ -18,7 +20,10 @@ function onOpen() {
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Reset All Sheet Formatting', 'resetSheetFormatting') // Renamed for clarity
+      // Renamed as requested
+      .addItem('Config: Reset Untagged Meeting Sheet Formatting', 'resetSheetFormatting')
+      // Restored missing item
+      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
@@ -68,6 +73,7 @@ function saveConfigAndRun() {
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
+        // --- 1. Configuration ---
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
         const selectedQuarter = getConfig("QuarterOverride");
@@ -85,13 +91,24 @@ function findEventsMissingTag() {
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
+        
+        // --- NEW: SMART KEYWORD MAP (Detects Conflicts) ---
         const keywordMap = new Map();
         tagsData.forEach(row => {
             if (row[1] && row[3]) {
-                row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => keywordMap.set(k, row[1]));
+                row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+                    // If keyword already exists AND points to a different tag, flag it as CONFLICT
+                    if (keywordMap.has(k) && keywordMap.get(k) !== row[1] && keywordMap.get(k) !== "CONFLICT") {
+                        keywordMap.set(k, "CONFLICT");
+                    } else if (!keywordMap.has(k)) {
+                        keywordMap.set(k, row[1]);
+                    }
+                });
             }
         });
+        // --------------------------------------------------
         
+        // --- 2. Date Logic ---
         let start, end;
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
             const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
@@ -103,6 +120,7 @@ function findEventsMissingTag() {
             end = new Date(); end.setHours(23, 59, 59, 999); end.setDate(end.getDate() + daysAhead);
         }
         
+        // --- 3. Fetch Events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         let allEvents = [], pageToken = null;
         do {
@@ -111,6 +129,7 @@ function findEventsMissingTag() {
           pageToken = response.nextPageToken;
         } while (pageToken);
 
+        // --- 4. Process Events ---
         const events = allEvents;
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
@@ -134,6 +153,7 @@ function findEventsMissingTag() {
             let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
             let isInPerson = false;
             let hasSETagInDescription = false;
+            
             let originalTag = "", suggestedTag = "";
 
             if (hasMainTag) {
@@ -148,13 +168,18 @@ function findEventsMissingTag() {
                     suggestedTag = originalTag;
                 }
             } else {
+                // --- NEW: SMART AUTO-TAGGER ---
                 const searchText = (title + ' ' + description).toLowerCase();
                 for (const [keyword, fullName] of keywordMap.entries()) {
+                    // Only auto-tag if we found a match AND it's not a conflicted keyword
                     if (searchText.includes(keyword)) {
-                        suggestedTag = fullName;
-                        break;
+                        if (fullName !== "CONFLICT") {
+                             suggestedTag = fullName;
+                        }
+                        break; // Stop after first keyword match (even if conflicted)
                     }
                 }
+                // ------------------------------
             }
             
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
@@ -177,12 +202,11 @@ function findEventsMissingTag() {
             }
         }
         
+        // --- 5. Write Results ---
         const sheet = file.getSheets()[0];
-        // Surgical clear: Content and basic formats only. PRESERVES Conditional Formatting.
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
-        
         const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Last Refreshed", "Original SE", "Original IP", "Original Tag"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         
@@ -198,6 +222,7 @@ function findEventsMissingTag() {
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
+        // --- 6. Formatting ---
         _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
@@ -331,7 +356,8 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     const lastRow = sheet.getLastRow();
     const startRow = 2;
     if (lastRow > 1) {
-        sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("center");
+        // FIX: Left alignment for Start Time (Col 2)
+        sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("left");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
         
         const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
@@ -341,12 +367,21 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
 
+    if (lastRow > 1) {
+        const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
+        const rules = sheet.getConditionalFormatRules();
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
+        sheet.setConditionalFormatRules(rules);
+    }
+
     if (configs.seTaggingMode) {
         if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
         if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            // Skipped Col G and H to avoid overwrite
         }
     }
     if (fullyTaggedMeetings.length > 0) {
@@ -401,11 +436,6 @@ function updateQuarterDropdown() {
   ss.toast("Quarter dropdown updated.");
 }
 
-/**
- * The MASTER FORMATTING FUNCTION.
- * Renamed to 'resetSheetFormatting' because that's what it does.
- * It wipes and rebuilds ALL Conditional Formatting for the sheet.
- */
 function resetSheetFormatting() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
@@ -413,7 +443,6 @@ function resetSheetFormatting() {
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
     ss.toast("Resetting all sheet formatting... please wait.");
 
-    // 1. Prepare Tag Data
     const lastTagRow = tagsSheet.getLastRow();
     const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
     const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
@@ -425,7 +454,6 @@ function resetSheetFormatting() {
         }
     }
 
-    // 2. Setup Helper Sheet for Dropdowns
     const helperSheetName = "_TagListHelper";
     let helperSheet = ss.getSheetByName(helperSheetName);
     if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
@@ -437,23 +465,17 @@ function resetSheetFormatting() {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
-    // 3. MASTER CONDITIONAL FORMATTING RESET
-    // This is the key: WE BUILD ALL RULES HERE AT ONCE.
     mainSheet.clearConditionalFormatRules();
     let allRules = [];
-
-    // A. Add Colored Chip Rules (Col G)
     const dropdownRangeForRules = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
     tagNames.forEach((nameArr, i) => {
         allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
     });
 
-    // B. Add Synced Status Rules (Col H)
     const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
     allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
 
-    // 4. Apply ALL rules to the sheet at once.
     mainSheet.setConditionalFormatRules(allRules);
     ss.toast("All sheet formatting has been reset successfully.");
 }
