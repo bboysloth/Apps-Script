@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.3.4
- * @description Critical Bug Fix. The 'updateTagDropdownsAndColors' function now correctly
- * syncs tag names and background colors, filtering out blank rows from BOTH lists
- * to prevent dimension mismatch errors when writing to the helper sheet.
- * @version 2.3.4
+ * @file Meeting Tagger Tool v2.3.5
+ * @description Critical Bug Fix. Ensures that tag names and background colors are
+ * synchronously filtered in ALL functions. This prevents the "dimension mismatch"
+ * error when creating the helper sheet, regardless of which function triggers it.
+ * @version 2.3.5
  */
 
 // =================================================================
@@ -83,20 +83,34 @@ function findEventsMissingTag() {
         const seLeadTagText = getConfig("SELeadTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
 
+        // --- 2. Prepare Tag Data (FIXED v2.3.5) ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
-        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-        const tagBackgrounds = tagColorRange.getBackgrounds();
+        const lastTagRow = tagsSheet.getLastRow();
+        const tagsRawData = tagsSheet.getRange("B2:E" + lastTagRow).getValues(); // Cat, Name, Abbr, Keywords
+        const tagsRawColors = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds(); // Colors from Name column
+
+        // Synchronously filter data and colors to ensure they match perfectly
+        const cleanTagsData = [];
+        const cleanTagBackgrounds = [];
         
-        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
+        for (let i = 0; i < tagsRawData.length; i++) {
+             // Check if Full Name (index 1) exists and is not just whitespace
+             if (tagsRawData[i][1] && tagsRawData[i][1].trim() !== "") {
+                 cleanTagsData.push(tagsRawData[i]);
+                 cleanTagBackgrounds.push(tagsRawColors[i]);
+             }
+        }
+        
+        const tagMap = new Map(cleanTagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
-        tagsData.forEach(row => {
+        cleanTagsData.forEach(row => {
             if (row[1] && row[3]) {
                 row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => keywordMap.set(k, row[1]));
             }
         });
-        
-        // --- 2. Date Logic ---
+        // --- END FIX ---
+
+        // --- 3. Date Logic ---
         let start, end;
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
             const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
@@ -108,7 +122,7 @@ function findEventsMissingTag() {
             end = new Date(); end.setHours(23, 59, 59, 999); end.setDate(end.getDate() + daysAhead);
         }
         
-        // --- 3. Fetch Events ---
+        // --- 4. Fetch Events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         let allEvents = [], pageToken = null;
         do {
@@ -117,7 +131,7 @@ function findEventsMissingTag() {
           pageToken = response.nextPageToken;
         } while (pageToken);
 
-        // --- 4. Process Events ---
+        // --- 5. Process Events ---
         const events = allEvents;
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
@@ -185,12 +199,11 @@ function findEventsMissingTag() {
             }
         }
         
-        // --- 5. Write Results ---
+        // --- 6. Write Results ---
         const sheet = file.getSheets()[0];
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
-        
         const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Last Refreshed", "Original SE", "Original IP", "Original Tag"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         
@@ -206,8 +219,9 @@ function findEventsMissingTag() {
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
-        // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
+        // --- 7. Formatting ---
+        // Pass the CLEAN data to the formatter
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData: cleanTagsData, tagBackgrounds: cleanTagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -348,6 +362,23 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
 
+    // Use the passed-in clean data to build the dropdowns if needed
+    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const helperSheetName = "_TagListHelper";
+        let helperSheet = ss.getSheetByName(helperSheetName);
+        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
+        const tagNames = configs.tagsData.map(row => [row[1]]); // Use CLEAN data
+        if (tagNames.length > 0) {
+            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+            helperRange.setValues(tagNames);
+            helperRange.setBackgrounds(configs.tagBackgrounds); // Use CLEAN colors
+            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
+            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
+        }
+    }
+
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
         const rules = sheet.getConditionalFormatRules();
@@ -362,7 +393,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 6).setBackground('#f4cccc');
-            // Intentionally skipping Col G (7) and H (8) for row coloring here
         }
     }
     if (fullyTaggedMeetings.length > 0) {
@@ -422,15 +452,14 @@ function updateTagDropdownsAndColors() {
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheets()[0];
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Updating tag dropdowns... please wait.");
+    ss.toast("Updating tag dropdowns...");
 
-    const tagRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-    const tagRawValues = tagRange.getValues();
-    const tagRawBackgrounds = tagRange.getBackgrounds();
+    // --- THIS IS THE FIX (v2.3.5) ---
+    const lastTagRow = tagsSheet.getLastRow();
+    const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
+    const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
     const tagNames = [], tagColors = [];
-
-    // --- THIS IS THE FIX (v2.3.4) ---
-    // Filter OUT blank rows so names and colors stay synced and have same length.
+    // Synchronously filter BOTH lists
     for (let i = 0; i < tagRawValues.length; i++) {
         if (tagRawValues[i][0] && tagRawValues[i][0].trim() !== "") {
             tagNames.push([tagRawValues[i][0]]);
@@ -454,7 +483,6 @@ function updateTagDropdownsAndColors() {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
-    // Re-add Synced column rules here too, as we cleared ALL rules above.
     const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     let rules = [];
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
@@ -467,4 +495,28 @@ function updateTagDropdownsAndColors() {
 function validateTagKeywords() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
-    if (!
+    if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
+    ss.toast("Validating keywords...");
+
+    const tagsData = tagsSheet.getRange("C2:E" + tagsSheet.getLastRow()).getValues();
+    const tracker = new Map(), duplicates = new Map();
+
+    tagsData.forEach(row => {
+        if (row[0] && row[2]) {
+            row[2].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+                if (tracker.has(k) && tracker.get(k) !== row[0]) {
+                    if (!duplicates.has(k)) duplicates.set(k, [tracker.get(k)]);
+                    duplicates.get(k).push(row[0]);
+                } else { tracker.set(k, row[0]); }
+            });
+        }
+    });
+
+    if (duplicates.size === 0) { ss.toast("Success! All keywords are unique."); }
+    else {
+        let msg = "Warning: Duplicate keywords found!\n";
+        for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
+        SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
+    }
+}
+// #endregion
