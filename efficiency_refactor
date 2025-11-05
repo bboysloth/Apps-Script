@@ -23,7 +23,7 @@ function onOpen() {
       // Renamed as requested
       .addItem('Config: Reset Untagged Meeting Sheet Formatting', 'resetSheetFormatting')
       // Restored missing item
-      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
+      .addItem('Config: Validate Auto-Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
