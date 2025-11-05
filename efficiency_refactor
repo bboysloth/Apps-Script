@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.4.9
- * @description Definitive Dashboard Version.
- * 1. Fixed Pie Chart styling: removed pure white slices and set percentage text to white.
- * 2. Includes all previous fixes for layout, date logic, and conflict prevention.
- * @version 2.4.9
+ * @file Meeting Tagger Tool v2.4.10
+ * @description Visual Tweaks.
+ * 1. Pie Chart title font size increased to 20.
+ * 2. 'External Attendees' (Col D) now colors FALSE values Red instead of No Fill.
+ * @version 2.4.10
  */
 
 // =================================================================
@@ -87,6 +87,9 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
@@ -213,7 +216,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -348,12 +351,30 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     if (lastRow > 1) {
         sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("left");
         sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
+        
+        // FIX: Col D Red for FALSE, Green for TRUE
         const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
-        sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : [null]));
+        sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
     }
     
     sheet.getRange("I1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.hideColumns(10, 3);
+
+    if (lastRow > 1 && configs.tagsData && configs.tagBackgrounds) {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const helperSheetName = "_TagListHelper";
+        let helperSheet = ss.getSheetByName(helperSheetName);
+        if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
+        const tagNames = configs.tagsData.map(row => [row[1]]);
+        if (tagNames.length > 0) {
+            const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
+            helperRange.setValues(tagNames);
+            helperRange.setBackgrounds(configs.tagBackgrounds); 
+            const dropdownRule = SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build();
+            sheet.getRange(startRow, 7, lastRow - 1, 1).setDataValidation(dropdownRule);
+        }
+    }
 
     if (lastRow > 1) {
         const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
@@ -378,7 +399,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 }
 
 // =================================================================
-// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS
+// #region 5. DYNAMIC QUARTER, ADMIN & VISUALS FUNCTIONS
 // =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -409,6 +430,7 @@ function updateQuarterDropdown() {
   const finder = configSheet.createTextFinder("QuarterOverride").matchEntireCell(true).findNext();
   if (!finder) { ss.toast("Error: Label 'QuarterOverride' not found."); return; }
   
+  const dropdownCell = finder.offset(0, 1);
   let quarters = ["None"];
   let today = new Date();
   for (let i = 0; i < 5; i++) {
@@ -421,48 +443,6 @@ function updateQuarterDropdown() {
   }
   finder.offset(0, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(quarters, true).setAllowInvalid(false).build());
   ss.toast("Quarter dropdown updated.");
-}
-
-function updateTagDropdownsAndColors() {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const tagsSheet = ss.getSheetByName("Tags");
-    const mainSheet = ss.getSheets()[0];
-    if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Updating tag dropdowns...");
-
-    const lastTagRow = tagsSheet.getLastRow();
-    const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
-    const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
-    const tagNames = [], tagColors = [];
-    for (let i = 0; i < tagRawValues.length; i++) {
-        if (tagRawValues[i][0] && tagRawValues[i][0].trim() !== "") {
-            tagNames.push([tagRawValues[i][0]]);
-            tagColors.push([tagRawBackgrounds[i][0]]);
-        }
-    }
-
-    const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
-    dropdownRange.clearDataValidations();
-
-    const helperSheetName = "_TagListHelper";
-    let helperSheet = ss.getSheetByName(helperSheetName);
-    if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
-    if (tagNames.length > 0) {
-        const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
-        helperRange.setValues(tagNames);
-        helperRange.setBackgrounds(tagColors);
-        dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
-    }
-
-    // RE-ADD Synced Column Formatting
-    const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
-    mainSheet.clearConditionalFormatRules();
-    let rules = [];
-    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
-    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
-    mainSheet.setConditionalFormatRules(rules);
-
-    ss.toast("Tag dropdowns and colors updated.");
 }
 
 function validateTagKeywords() {
@@ -492,10 +472,6 @@ function validateTagKeywords() {
         SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
     }
 }
-
-// =================================================================
-// #region 6. DASHBOARD FUNCTIONS
-// =================================================================
 
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -568,7 +544,7 @@ function generateDashboard() {
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
-      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#ffffff', '#34545e', '#959ea7', '#de6662'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
