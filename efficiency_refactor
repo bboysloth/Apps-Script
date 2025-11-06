@@ -357,10 +357,11 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
     }
     
-    // FIX: Correct location for timestamp (J1)
+    // FIX: Correct location for timestamp and auto-resize column (J1)
     sheet.getRange("J1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
-    // Adjust Column J to 'Last Refreshed' value
-    sheet.autoResizeColumn(10);
+    sheet.setColumnWidth(10, 300);
+    // Adjust Column C to 'Created by' value
+    sheet.setColumnWidth(3,230); 
     // FIX: Hide correct columns (K=11, L=12, M=13)
     sheet.hideColumns(11, 3);
 
