@@ -1,10 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.4.10
- * @description Final Polish.
- * 1. FIXED: Explicitly clears old checkboxes from Visuals sheet before creating new ones.
- * 2. FIXED: Removed pure white from pie chart color palette.
- * 3. UPDATED: 'Untagged Meetings' headers now match 'Visuals' blue style (#3c9fd2 with white text).
- * @version 2.4.10
+ * @file Meeting Tagger Tool v2.4.11
+ * @description CRITICAL FIX: Restored the missing 'updateTagDropdownsAndColors' function
+ * that was accidentally omitted in the previous version. This function is required
+ * to populate the colored chips in Column G.
+ * @version 2.4.11
  */
 
 // =================================================================
@@ -20,7 +19,7 @@ function onOpen() {
       .addItem('Generate Dashboard', 'generateDashboard')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors') // This now has a matching function below
       .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
@@ -88,9 +87,6 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
-        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-        const tagBackgrounds = tagColorRange.getBackgrounds();
-        
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
@@ -217,7 +213,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -230,6 +226,10 @@ function updateMeetingTag(e, isSingleEditMode) {
       const range = e.range;
       if (range.getRow() <= 1) return;
       const editedCol = range.getColumn();
+      // Ignore edits on Sheet2, Config, Tags, Visuals
+      const sheetName = sheet.getName();
+      if (sheetName !== ss.getSheets()[0].getName()) return;
+
       if (editedCol === 5 || editedCol === 6) {
         if (e.value === "TRUE") range.setBackground('#d9ead3');
         else range.setBackground('#ffffff');
@@ -346,7 +346,6 @@ function getConfig(label) {
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
-    // UPDATED: Header row is now Blue (#3c9fd2) with White text
     sheet.getRange(1, 1, 1, headers.length).setBackground("#283e4d").setFontColor("white");
     
     const lastRow = sheet.getLastRow();
@@ -415,7 +414,6 @@ function updateQuarterDropdown() {
   const finder = configSheet.createTextFinder("QuarterOverride").matchEntireCell(true).findNext();
   if (!finder) { ss.toast("Error: Label 'QuarterOverride' not found."); return; }
   
-  const dropdownCell = finder.offset(0, 1);
   let quarters = ["None"];
   let today = new Date();
   for (let i = 0; i < 5; i++) {
@@ -538,9 +536,9 @@ function generateDashboard() {
   }
   const scRange = visualsSheet.getRange(4, 1, 1, 10);
   const scRules = [
-      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(150).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(150, 200).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(200).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
   ];
   visualsSheet.setConditionalFormatRules(scRules);
 
@@ -552,8 +550,6 @@ function generateDashboard() {
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
     visualsSheet.getRange(7, 8, sortedTags.length, 2).setValues(sortedTags);
-    // FIX: Explicitly clear checkboxes from the whole column first to avoid stragglers
-    visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
     const numRows = sortedTags.length;
     const formulas = [];
