@@ -347,7 +347,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
     // UPDATED: Header row is now Blue (#3c9fd2) with White text
-    sheet.getRange(1, 1, 1, headers.length).setBackground("#3c9fd2").setFontColor("white");
+    sheet.getRange(1, 1, 1, headers.length).setBackground("#283e4d").setFontColor("white");
     
     const lastRow = sheet.getLastRow();
     const startRow = 2;
@@ -532,22 +532,22 @@ function generateDashboard() {
   const scorecardValues = [total, external, internal, seLead, inPerson];
   let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
-      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#3c9fd2").setFontColor("white").setBorder(true, true, true, true, true, true);
+      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
       visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
       currentCol += 2;
   }
   const scRange = visualsSheet.getRange(4, 1, 1, 10);
   const scRules = [
-      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(150).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(150, 200).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(200).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
   ];
   visualsSheet.setConditionalFormatRules(scRules);
 
-  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
-  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
-  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
-  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#3c9fd2").setFontColor("white");
+  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
