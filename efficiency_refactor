@@ -1,11 +1,11 @@
 /**
- * @file Meeting Tagger Tool v2.5.3
- * @description CRITICAL REGRESSION FIX.
- * 1. RESTORED 'Event Links' in Column I (accidentally removed in last version).
- * 2. FIXED Column J ('Last Refreshed') visibility by explicitly setting width to 180px
- * and only hiding columns K, L, M (indices 11, 12, 13).
- * 3. Confirmed all other features (Dashboard, Auto-Tagging, Configs) are present.
- * @version 2.5.3
+ * @file Meeting Tagger Tool v2.5.4
+ * @description STABILITY & FIXES.
+ * 1. CRITICAL FIX: Re-enabled automatic coloring of Column G chips on every refresh.
+ * Reads colors from 'Tags' sheet and re-applies conditional formatting rules to guarantee they never disappear.
+ * 2. RETAINS all Dashboard features (Horizontal scorecards, 3D chart, etc.).
+ * 3. RETAINS all Core Logic (Auto-tagging, conflict detection, pagination).
+ * @version 2.5.4
  */
 
 // =================================================================
@@ -87,11 +87,12 @@ function findEventsMissingTag() {
         const seLeadTagText = getConfig("SELeadTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
 
+        // --- 2. Prepare Tag Data (RESTORED COLOR READING) ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
-        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
-        const tagBackgrounds = tagColorRange.getBackgrounds();
-        
+        const lastTagRow = tagsSheet.getLastRow();
+        const tagsData = tagsSheet.getRange("B2:E" + lastTagRow).getValues();
+        const tagColors = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds(); // Read colors specifically
+
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
@@ -106,7 +107,7 @@ function findEventsMissingTag() {
             }
         });
         
-        // --- 2. Date Logic ---
+        // --- 3. Date Logic ---
         let start, end;
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
             const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
@@ -118,7 +119,7 @@ function findEventsMissingTag() {
             end = new Date(); end.setHours(23, 59, 59, 999); end.setDate(end.getDate() + daysAhead);
         }
         
-        // --- 3. Fetch Events ---
+        // --- 4. Fetch Events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         let allEvents = [], pageToken = null;
         do {
@@ -127,7 +128,7 @@ function findEventsMissingTag() {
           pageToken = response.nextPageToken;
         } while (pageToken);
 
-        // --- 4. Process Events ---
+        // --- 5. Process Events ---
         const events = allEvents;
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
@@ -151,7 +152,6 @@ function findEventsMissingTag() {
             let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
             let isInPerson = false;
             let hasSETagInDescription = false;
-            
             let originalTag = "", suggestedTag = "";
 
             if (hasMainTag) {
@@ -180,14 +180,13 @@ function findEventsMissingTag() {
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
             const hasExternalAttendee = !isPurelyInternal;
             
-            // RESTORED: Hyperlink in Col I, Hidden data moved to K,L,M
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
                 isSeLead, isInPerson, suggestedTag, 
-                '', // H: Synced Placeholder
-                `=HYPERLINK("${event.htmlLink}", "Open Event")`, // I: Event Link RESTORED
-                '', // J: Last Refreshed Placeholder
-                isSeLead, isInPerson, originalTag   // K, L, M: Hidden Originals
+                '', 
+                `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
+                '', 
+                isSeLead, isInPerson, originalTag
             ];
             
             if (seTaggingMode) {
@@ -200,7 +199,7 @@ function findEventsMissingTag() {
             }
         }
         
-        // --- 5. Write Results ---
+        // --- 6. Write Results ---
         const sheet = file.getSheets()[0];
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
@@ -212,7 +211,6 @@ function findEventsMissingTag() {
         if (finalList.length > 0) { 
             sheet.getRange(2, 1, finalList.length, headers.length).setValues(finalList); 
             const numRows = finalList.length;
-            // UPDATED FORMULA: Compare G with M (col 13), F with L (col 12), E with K (col 11)
             const formulas = [];
             for (let i = 2; i <= numRows + 1; i++) {
                  formulas.push([`=AND(E${i}=K${i}, F${i}=L${i}, G${i}=M${i})`]);
@@ -221,8 +219,8 @@ function findEventsMissingTag() {
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
-        // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
+        // --- 7. Formatting (RESTORED FULL DATA PASSING) ---
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagColors });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -255,7 +253,6 @@ function updateMeetingTag(e, isSingleEditMode) {
     const tagsSheet = ss.getSheetByName("Tags");
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
     const tagMap = new Map(tagsData.map(row => [row[0], row[1]]));
-    // UPDATED: Read 13 columns (A-M)
     const sheetData = sheet.getRange(2, 1, lastRow - 1, 13).getValues();
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
@@ -284,7 +281,6 @@ function updateMeetingTag(e, isSingleEditMode) {
       const currentSeLead = rowData[4];
       const currentInPerson = rowData[5];
       const currentTag = rowData[6];
-      // UPDATED INDICES for K,L,M (10, 11, 12)
       const originalSeLead = rowData[10];
       const originalInPerson = rowData[11];
       const originalTag = rowData[12];
@@ -340,6 +336,10 @@ function updateMeetingTag(e, isSingleEditMode) {
   } catch (err) { SpreadsheetApp.getUi().alert(err.message); }
 }
 
+// =================================================================
+// #region 4. HELPER & UTILITY FUNCTIONS
+// =================================================================
+
 function getConfig(label) {
   const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
   if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
@@ -362,35 +362,55 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
     }
     
-    // Timestamp in J1 (Col 10)
     sheet.getRange("J1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
-    // FIX: Set J Width to 180
     sheet.setColumnWidth(10, 180);
-    // Hide K, L, M (Col 11, 12, 13)
     sheet.hideColumns(11, 3);
 
-    if (lastRow > 1) {
-        const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
-        let rules = sheet.getConditionalFormatRules();
-        rules = rules.filter(r => r.getRanges()[0].getColumn() !== 8);
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
-        sheet.setConditionalFormatRules(rules);
+    // --- FIX: FORCE RE-APPLICATION OF CHIP RULES EVERY TIME ---
+    const dropdownRange = sheet.getRange(startRow, 7, lastRow - 1, 1);
+    let rules = [];
+    // 1. Re-build chip rules from passed data
+    if (configs.tagsData && configs.tagColors) {
+        configs.tagsData.forEach((row, i) => {
+             if (row[1] && row[1].trim() !== "") { // row[1] is FullName
+                 rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(row[1]).setBackground(configs.tagColors[i][0]).setRanges([dropdownRange]).build());
+             }
+        });
     }
+    // 2. Re-build Synced rules
+    const syncedRange = sheet.getRange(startRow, 8, lastRow - 1, 1);
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
+    
+    // 3. Apply ALL rules fresh. This guarantees no conflict.
+    sheet.setConditionalFormatRules(rules);
+    // ---------------------------------------------------------
 
     if (configs.seTaggingMode) {
-        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+        if (noTagMeetings.length > 0) {
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            sheet.getRange(startRow, 5, noTagMeetings.length, 2).setBackground('#f4cccc');
+        }
+        if (aeTaggedMeetings.length > 0) {
+            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
+            sheet.getRange(startRow + noTagMeetings.length, 5, aeTaggedMeetings.length, 2).setBackground('#fff2cc');
+        }
     } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            sheet.getRange(startRow, 5, noTagMeetings.length, 2).setBackground('#f4cccc');
         }
     }
+
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
     }
 }
+
+// =================================================================
+// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS
+// =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
   let startMonth, endMonth, startYear, endYear;
@@ -467,13 +487,7 @@ function updateTagDropdownsAndColors() {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
-    const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
-    mainSheet.clearConditionalFormatRules();
-    let rules = [];
-    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
-    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
-    mainSheet.setConditionalFormatRules(rules);
-
+    // NO MORE CONDITIONAL RULES HERE. They are handled by _formatUntaggedSheet now to avoid conflicts.
     ss.toast("Tag dropdowns and colors updated.");
 }
 
@@ -516,7 +530,6 @@ function generateDashboard() {
       visualsSheet.clear(); 
   }
   
-  visualsSheet.showColumns(1, visualsSheet.getMaxColumns());
   visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
   
   const lastRow = dataSheet.getLastRow();
@@ -595,3 +608,4 @@ function generateDashboard() {
   visualsSheet.autoResizeColumns(7, 4);
   ss.setActiveSheet(visualsSheet);
 }
+// #endregion
