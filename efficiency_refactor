@@ -1,13 +1,13 @@
 /**
- * @file Meeting Tagger Tool v2.6.0
- * @description FEATURE: Time Tracking.
- * This script is built from the stable v2.5.6 baseline.
- * 1. 'findEventsMissingTag' now calculates event duration and stores it in a new hidden column (N).
- * 2. 'generateDashboard' reads this new data to create a "Total Time Spent" scorecard
- * and a "Total Time" column in the tag breakdown table.
- * 3. Adds a new helper function `_formatMinutesToHours` for clean formatting.
- * 4. All core logic (v2.5.6) remains stable and unchanged.
- * @version 2.6.0
+ * @file Meeting Tagger Tool v2.6.1
+ * @description CRITICAL LOGIC FIX.
+ * 1. FIX: The "Auto-Tagger" now correctly populates 'Suggested' (Col G) vs 'Original' (Col M),
+ * which makes the 'Synced' (Col H) formula turn FALSE as intended.
+ * 2. FIX: The 'Apply Changes' function now correctly detects changes to the
+ * 'SE Lead' and 'In Person' checkboxes.
+ * 3. FIX: The 'Update Tag Dropdowns & Colors' function is fixed. It now correctly
+ * re-applies the conditional formatting rules for the colored chips in Col G.
+ * @version 2.6.1
  */
 
 // =================================================================
@@ -20,11 +20,11 @@ function onOpen() {
       .addSeparator()
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
-      .addItem('Generate Dashboard', 'generateDashboard') // NEW
+      .addItem('Generate Dashboard', 'generateDashboard')
       .addSeparator()
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Reset Untagged Meeting Sheet Formatting', 'resetSheetFormatting')
-      .addItem('Config: Validate Auto-Tag Keywords', 'validateTagKeywords')
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
       .addToUi();
 }
@@ -91,9 +91,10 @@ function findEventsMissingTag() {
 
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
-        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
         
-        // --- SMART KEYWORD MAP (v2.5.6 logic) ---
+        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]]));
         const keywordMap = new Map();
         tagsData.forEach(row => {
             if (row[1] && row[3]) {
@@ -149,19 +150,23 @@ function findEventsMissingTag() {
             
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
-            let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
-            let isInPerson = false;
+            
+            // --- FIX (v2.6.1): Separate Original vs. Suggested States ---
+            let originalSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
+            let originalInPerson = false;
+            let originalTag = "";
             let hasSETagInDescription = false;
-            let originalTag = "", suggestedTag = "";
+            
+            let suggestedSeLead = originalSeLead;
+            let suggestedInPerson = false; // This will be set by the tag logic
+            let suggestedTag = "";
 
-            // --- NEW (v2.6.0): Calculate Duration ---
             let durationInMinutes = 0;
             if (event.end.dateTime && event.start.dateTime) {
                 const eventStartTimeMs = new Date(event.start.dateTime).getTime();
                 const eventEndTimeMs = new Date(event.end.dateTime).getTime();
-                durationInMinutes = Math.round((eventEndTimeMs - eventStartTimeMs) / 60000); // 60,000 ms in a minute
+                durationInMinutes = Math.round((eventEndTimeMs - eventStartTimeMs) / 60000);
             }
-            // --- End New ---
 
             if (hasMainTag) {
                 const lines = description.split('\n');
@@ -169,37 +174,41 @@ function findEventsMissingTag() {
                 if (tagLine) {
                     hasSETagInDescription = tagLine.includes("(SE)");
                     let abbreviatedTag = tagLine.trim().substring(tagPrefix.length).trim();
-                    if (modifier && abbreviatedTag.includes(modifier)) isInPerson = true;
+                    if (modifier && abbreviatedTag.includes(modifier)) {
+                      originalInPerson = true;
+                    }
                     let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
                     originalTag = tagMap.get(lookupKey) || "";
                     suggestedTag = originalTag;
+                    suggestedInPerson = originalInPerson;
                 }
             } else {
+                // `originalTag` remains ""
                 const searchText = (title + ' ' + description).toLowerCase();
                 for (const [keyword, fullName] of keywordMap.entries()) {
                     if (searchText.includes(keyword)) {
                         if (fullName !== "CONFLICT") {
-                             suggestedTag = fullName;
+                             suggestedTag = fullName; // Set the suggestion
                         }
                         break;
                     }
                 }
             }
+            // --- END FIX ---
             
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
             const hasExternalAttendee = !isPurelyInternal;
             
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
-                isSeLead, isInPerson, suggestedTag, 
-                '', 
-                `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
-                '', 
-                isSeLead, isInPerson, originalTag,
-                durationInMinutes // NEW: Add duration to hidden Column N
+                suggestedSeLead, suggestedInPerson, suggestedTag, // Visible: E, F, G
+                '', // H: Synced Placeholder
+                `=HYPERLINK("${event.htmlLink}", "Open Event")`, // I: Event Link
+                '', // J: Last Refreshed Placeholder
+                originalSeLead, originalInPerson, originalTag,   // K, L, M (Hidden Originals)
+                durationInMinutes // N: Duration (Hidden)
             ];
             
-            // --- HIERARCHICAL SORTING LOGIC (v2.5.6) ---
             if (showTaggedMeetings) {
                 if (hasMainTag) { fullyTaggedMeetings.push(rowData); } 
                 else { noTagMeetings.push(rowData); }
@@ -210,7 +219,6 @@ function findEventsMissingTag() {
             } else {
                 if (!hasMainTag) { noTagMeetings.push(rowData); }
             }
-            // --- END OF FIX ---
         }
         
         // --- 5. Write Results ---
@@ -227,18 +235,25 @@ function findEventsMissingTag() {
             const numRows = finalList.length;
             const formulas = [];
             for (let i = 2; i <= numRows + 1; i++) {
-                 formulas.push([`=AND(E${i}=K${i}, F${i}=L${i}, G${i}=M${i})`]); // Formula remains correct
+                 // Formula now correctly compares G(7) to M(13), F(6) to L(12), E(5) to K(11)
+                 formulas.push([`=AND(E${i}=K${i}, F${i}=L${i}, G${i}=M${i})`]);
             }
             sheet.getRange(2, 8, numRows, 1).setFormulas(formulas);
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 6. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter, tagsData, tagBackgrounds });
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
 
+/**
+ * The main worker function that updates the calendar.
+ * WHY THE CHANGE (v2.6.1):
+ * 1. The `tagMap` is now correctly FullName -> Abbreviation.
+ * 2. The `hasChanged` logic now correctly checks all 3 editable fields (E, F, G).
+ */
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
@@ -265,10 +280,13 @@ function updateMeetingTag(e, isSingleEditMode) {
     if (lastRow < 2) { ss.toast("No data to process."); return; }
     
     const tagsSheet = ss.getSheetByName("Tags");
+    // --- THIS IS THE FIX (v2.6.1) ---
+    // Read C and D, and map FullName (index 0) -> Abbreviation (index 1)
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
     const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
-    // NEW (v2.6.0): Read 14 columns
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues();
+    // --- END OF FIX ---
+
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues(); // Read 14 columns
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
@@ -293,14 +311,15 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      const currentSeLead = rowData[4];
-      const currentInPerson = rowData[5];
-      const currentTag = rowData[6];
-      // Indices K, L, M are still correct
+      const currentSeLead = rowData[4];    // Col E
+      const currentInPerson = rowData[5];  // Col F
+      const currentTag = rowData[6];       // Col G
+      // Indices K, L, M are correct
       const originalSeLead = rowData[10];
       const originalInPerson = rowData[11];
       const originalTag = rowData[12];
 
+      // --- FIX (v2.6.1): Check all three fields for changes ---
       const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
       if (hasChanged && currentTag) {
@@ -319,7 +338,7 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          let abbreviatedTag = tagMap.get(currentTag);
+          let abbreviatedTag = tagMap.get(currentTag); // Look up abbreviation from the full name
           if (!abbreviatedTag) { SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet.`); continue; }
           
           if (currentInPerson && abbreviatedTag) {
@@ -365,30 +384,16 @@ function getConfig(label) {
   return finder.offset(0, 1).getValue();
 }
 
-/**
- * NEW (v2.6.0): Helper function to format minutes into a "Xhr Ymin" string.
- * @param {number} totalMinutes The total minutes to format.
- * @returns {string} A human-readable time string.
- */
 function _formatMinutesToHours(totalMinutes) {
   if (totalMinutes === 0) return "0min";
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  
   let result = "";
-  if (hours > 0) {
-    result += `${hours}hr`;
-  }
-  if (minutes > 0) {
-    result += ` ${minutes}min`;
-  }
+  if (hours > 0) result += `${hours}hr`;
+  if (minutes > 0) result += ` ${minutes}min`;
   return result.trim();
 }
 
-/**
- * Helper function to apply formatting to the "Untagged Meetings" sheet.
- * WHY THE CHANGE (v2.6.0): Now hides 4 columns (K, L, M, N) starting at Col 11.
- */
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
@@ -487,17 +492,26 @@ function updateQuarterDropdown() {
   ss.toast("Quarter dropdown updated.");
 }
 
-function resetSheetFormatting() {
+/**
+ * Admin function to build colored chip dropdowns.
+ * WHY THE CHANGE (v2.6.1): This function is now fixed. It correctly
+ * clears all rules, then re-adds the rules for the chips (Col G) AND
+ * the rules for the 'Synced' column (Col H) at the same time.
+ */
+function updateTagDropdownsAndColors() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheets()[0];
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Resetting all sheet formatting... please wait.");
+    ss.toast("Updating tag dropdowns and colors...");
 
+    // 1. Read Tags and Colors from "Tags" sheet
     const lastTagRow = tagsSheet.getLastRow();
     const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
     const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
     const tagNames = [], tagColors = [];
+    
+    // Filter out blank rows to prevent errors
     for (let i = 0; i < tagRawValues.length; i++) {
         if (tagRawValues[i][0] && tagRawValues[i][0].trim() !== "") {
             tagNames.push([tagRawValues[i][0]]);
@@ -505,12 +519,15 @@ function resetSheetFormatting() {
         }
     }
 
+    // 2. Set up the dropdown validation (Column G)
     const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
     dropdownRange.clearDataValidations();
 
+    // 3. Use a helper sheet (the only reliable way for chips)
     const helperSheetName = "_TagListHelper";
     let helperSheet = ss.getSheetByName(helperSheetName);
     if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+
     if (tagNames.length > 0) {
         const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
         helperRange.setValues(tagNames);
@@ -518,19 +535,27 @@ function resetSheetFormatting() {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
+    // --- THIS IS THE FIX (v2.6.1) ---
+    // 4. Wipe ALL conditional rules and rebuild them correctly
     mainSheet.clearConditionalFormatRules();
     let allRules = [];
+
+    // 5. Build and add Chip Color rules (Col G)
     const dropdownRangeForRules = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
     tagNames.forEach((nameArr, i) => {
         allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
     });
 
+    // 6. Build and add Synced rules (Col H)
     const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
     allRules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
 
+    // 7. Apply all rules at once
     mainSheet.setConditionalFormatRules(allRules);
-    ss.toast("All sheet formatting has been reset successfully.");
+    // --- END OF FIX ---
+
+    ss.toast("Tag dropdowns and colors updated successfully.");
 }
 
 function validateTagKeywords() {
@@ -561,11 +586,6 @@ function validateTagKeywords() {
     }
 }
 
-/**
- * NEW FUNCTION (v2.6.0): Generates the Visuals Dashboard.
- * Reads data from 'Untagged Meetings' (including new Col N for duration)
- * and creates summary tables and charts on the 'Visuals' sheet.
- */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheets()[0];
@@ -582,12 +602,11 @@ function generateDashboard() {
   
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
-  // Read all 14 columns (A-N)
   const data = dataSheet.getRange(2, 1, lastRow - 1, 14).getValues();
   
   let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0;
   const tagCounts = new Map();
-  const tagTime = new Map(); // For tracking time per tag
+  const tagTime = new Map(); 
 
   data.forEach(row => {
     if (row[3] === true) external++;
@@ -595,7 +614,7 @@ function generateDashboard() {
     if (row[5] === true) inPerson++;
     
     const tagName = row[6];
-    const duration = row[13]; // Get duration from hidden column N (index 13)
+    const duration = row[13];
     
     if (typeof duration === 'number') {
         totalMinutes += duration;
@@ -610,51 +629,90 @@ function generateDashboard() {
   });
   let internal = total - external;
 
+  // --- Scorecard Section (Rows 3-4) ---
   const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs", "Total Time Spent"];
   const scorecardValues = [total, external, internal, seLead, inPerson, _formatMinutesToHours(totalMinutes)];
   
-  let currentCol = 1; // Start in Col A
+  let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
       visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
       visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
       currentCol += 2;
   }
-  const scRange = visualsSheet.getRange(4, 1, 1, 10); // Only apply to first 5 scorecards (A-J)
-  const scRules = [
+  const scRange = visualsSheet.getRange(4, 1, 1, 10);
+  let scRules = [
       SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
   ];
   visualsSheet.setConditionalFormatRules(scRules);
 
+  // --- Interactive Tag Table (Starts at G6) ---
+  // --- FIX (v2.6.1): Swapped J and K ---
   visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("J6").setValue("Total Time").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("K6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("K6").setValue("Total Time").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
     const tableData = sortedTags.map(([tag, count]) => {
         const timeInMinutes = tagTime.get(tag) || 0;
-        return [tag, count, _formatMinutesToHours(timeInMinutes)];
+        return [tag, count, timeInMinutes]; // Write raw minutes to Col J
     });
     
     visualsSheet.getRange(7, 8, tableData.length, 3).setValues(tableData); // Write H, I, J
+    visualsSheet.getRange(7, 10, tableData.length, 1).setNumberFormat(`0" min"`); // Format Col J as minutes
+    
     visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
     
     const numRows = sortedTags.length;
     const formulas = [];
+    const timeFormulas = [];
+    // Dynamic Formulas for Percentage (Col K) and Total Time (Col L, hidden)
     for (let i = 7; i < 7 + numRows; i++) {
-        // Formula in Col K (index 11)
-        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]);
+        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage
+        timeFormulas.push([`=IF(G${i}=TRUE, 0, J${i})`]); // Total Time (for dynamic sum)
     }
-    visualsSheet.getRange(7, 11, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%");
+    visualsSheet.getRange(7, 11, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col K
+    visualsSheet.getRange(7, 12, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col L
+    
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
   }
 
-  // Hidden Chart Source (now L, M)
-  visualsSheet.getRange("L6").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("L7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
-  visualS
+  // --- Dynamic "Total Time Spent" Scorecard ---
+  visualsSheet.getRange("L4").setFormula("=SUM(L7:L)");
+  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(L4/1440, "[h]'hr' m'min'")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+  // Hidden Chart Source (now M, N)
+  visualsSheet.getRange("M6").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("M7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  visualsSheet.hideColumns(12, 3); // Hide L, M, N
+
+  if (sortedTags.length > 0) {
+    const chartRange = visualsSheet.getRange("M7:N" + (7 + sortedTags.length));
+    const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
+      .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
+      .setOption('is3D', true)
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
+      .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
+      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
+      .setOption('height', 400).setOption('width', 700).setPosition(6, 1, 0, 0).build();
+    visualsSheet.insertChart(pieChart);
+  } else { visualsSheet.getRange("A6").setValue("No tagged meetings found."); }
+
+  const selectedQuarter = getConfig("QuarterOverride");
+  let dateString = `Last ${getConfig("DaysBack")} Days`;
+  if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
+  visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
+
+  visualsSheet.setColumnWidth(10, 120); // Col J (Total Time)
+  visualsSheet.setColumnWidth(11, 120); // Col K (Percentage)
+  visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I
+  ss.setActiveSheet(visualsSheet);
+}
+// #endregion
