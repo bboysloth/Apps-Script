@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.5.5
+ * @file Meeting Tagger Tool v2.5.6
  * @description CRITICAL LOGIC FIX: Resolves a contradiction between SETagMode
  * and ShowTaggedMeetings.
  * The sorting logic in 'findEventsMissingTag' is now rewritten to be hierarchical:
@@ -7,7 +7,7 @@
  * 'fullyTaggedMeetings' list (strikethrough), overriding the 'SETagMode' coloring.
  * 2. If 'ShowTaggedMeetings' is FALSE, the 'SETagMode' logic (Red/Yellow) works as before.
  * This fixes the bug where AE-tagged meetings were getting both yellow and strikethrough.
- * @version 2.5.5
+ * @version 2.5.6
  */
 
 // =================================================================
