@@ -1,10 +1,13 @@
 /**
- * @file Meeting Tagger Tool v2.5.1
- * @description Bug Fix for Column Indexing on 'Untagged Meetings'.
- * 1. FIXED: 'Last Refreshed' timestamp now correctly placed in J1 (was accidentally I1).
- * 2. FIXED: Column J is explicitly set to 180px width (was missing).
- * 3. FIXED: Hidden columns are now correctly K, L, M (indices 11, 3) instead of J, K, L.
- * @version 2.5.1
+ * @file Meeting Tagger Tool v2.5.5
+ * @description CRITICAL LOGIC FIX: Resolves a contradiction between SETagMode
+ * and ShowTaggedMeetings.
+ * The sorting logic in 'findEventsMissingTag' is now rewritten to be hierarchical:
+ * 1. If 'ShowTaggedMeetings' is TRUE, all tagged meetings (AE or SE) go to the
+ * 'fullyTaggedMeetings' list (strikethrough), overriding the 'SETagMode' coloring.
+ * 2. If 'ShowTaggedMeetings' is FALSE, the 'SETagMode' logic (Red/Yellow) works as before.
+ * This fixes the bug where AE-tagged meetings were getting both yellow and strikethrough.
+ * @version 2.5.5
  */
 
 // =================================================================
@@ -150,7 +153,6 @@ function findEventsMissingTag() {
             let isSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
             let isInPerson = false;
             let hasSETagInDescription = false;
-            
             let originalTag = "", suggestedTag = "";
 
             if (hasMainTag) {
@@ -188,14 +190,38 @@ function findEventsMissingTag() {
                 isSeLead, isInPerson, originalTag
             ];
             
-            if (seTaggingMode) {
-                if (hasSETagInDescription) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); } 
-                else if (hasMainTag) { aeTaggedMeetings.push(rowData); }
-                else { noTagMeetings.push(rowData); }
+            // --- FIX (v2.5.5): HIERARCHICAL SORTING LOGIC ---
+            // This logic block fixes the conflict between SETagMode and ShowTaggedMeetings.
+            // "Audit Mode" (ShowTaggedMeetings) now takes precedence.
+            
+            if (showTaggedMeetings) {
+                // "Audit Mode" is ON. Show ALL meetings.
+                if (hasMainTag) {
+                    fullyTaggedMeetings.push(rowData); // All tagged meetings get strikethrough
+                } else {
+                    noTagMeetings.push(rowData); // Untagged meetings are red
+                }
+            } else if (seTaggingMode) {
+                // "SE Tag Mode" is ON (and Audit Mode is OFF).
+                if (hasSETagInDescription) {
+                    // This meeting is fully tagged with an (SE) tag.
+                    // Since showTaggedMeetings is false, we HIDE it.
+                    // Do nothing, skip.
+                } else if (hasMainTag) {
+                    // Has an AE tag, but no (SE) tag.
+                    aeTaggedMeetings.push(rowData); // Yellow
+                } else {
+                    // No tag at all.
+                    noTagMeetings.push(rowData); // Red
+                }
             } else {
-                if (hasMainTag) { if (showTaggedMeetings) fullyTaggedMeetings.push(rowData); }
-                else { noTagMeetings.push(rowData); }
+                // "Normal Mode" is ON (both flags are OFF).
+                // Only show meetings that are completely untagged.
+                if (!hasMainTag) {
+                    noTagMeetings.push(rowData);
+                }
             }
+            // --- END OF FIX ---
         }
         
         // --- 5. Write Results ---
@@ -327,7 +353,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       } else {
         rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
       }
-      ss.toast(`${updatedCount} meeting(s) successfully updated.`);
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
     } else {
       ss.toast("No changes were detected to apply.");
     }
@@ -357,12 +383,8 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
     }
     
-    // FIX: Correct location for timestamp and auto-resize column (J1)
     sheet.getRange("J1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.setColumnWidth(10, 300);
-    // Adjust Column C to 'Created by' value
-    sheet.setColumnWidth(3,230); 
-    // FIX: Hide correct columns (K=11, L=12, M=13)
     sheet.hideColumns(11, 3);
 
     if (lastRow > 1) {
@@ -374,18 +396,34 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.setConditionalFormatRules(rules);
     }
 
-    if (configs.seTaggingMode) {
-        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
-    } else if (!configs.seTaggingMode && configs.showTaggedMeetings && configs.externalFilter) {
+    // --- FIX (v2.5.5): This formatting logic now respects the new sorting hierarchy ---
+    // If 'showTaggedMeetings' is on, we ONLY get red rows and strikethrough rows.
+    // If 'seTaggingMode' is on, we get red and yellow, but no strikethrough.
+    if (configs.showTaggedMeetings) {
         if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); // Red
+        }
+    } else if (configs.seTaggingMode) {
+        if (noTagMeetings.length > 0) {
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); // Red
+        }
+        if (aeTaggedMeetings.length > 0) {
+            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc'); // Yellow
+        }
+    } else {
+        // Normal mode (both flags false)
+        if (noTagMeetings.length > 0) {
+            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc'); // Red
         }
     }
+    
+    // This logic is now standalone and correct. It applies strikethrough to the
+    // 'fullyTaggedMeetings' bucket, which is ONLY populated if 'showTaggedMeetings' is TRUE.
     if (fullyTaggedMeetings.length > 0) {
-        const offset = noTagMeetings.length + aeTaggedMeetings.length;
+        const offset = noTagMeetings.length + aeTaggedMeetings.length; // aeTaggedMeetings will be 0 if showTaggedMeetings is true
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
     }
+    // --- END OF FIX ---
 }
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -574,7 +612,7 @@ function generateDashboard() {
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
-      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#de6662'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
@@ -587,7 +625,7 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(10, 180); // FIX: Ensure J on Visuals is also wide enough for consistency
-  visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I (don't resize J automatically to avoid shrink)
+  visualsSheet.setColumnWidth(10, 120);
+  visualsSheet.autoResizeColumns(7, 4);
   ss.setActiveSheet(visualsSheet);
 }
