@@ -4,11 +4,9 @@
 
             // Loop 1: Check Titles first for high priority
             for (const [keyword, rules] of keywordMap.entries()) {
-                if (rules === "CONFLICT") continue; 
-
-                // Check if the keyword rules allow searching titles AND the title includes it
-                if (rules.searchTitles && titleSearchText.includes(keyword)) {
-                    suggestedTag = rules.fullName;
+                // Check if the title includes the keyword AND the rules have a valid, non-conflicted titleTag
+                if (rules.titleTag && rules.titleTag !== "CONFLICT" && titleSearchText.includes(keyword)) {
+                    suggestedTag = rules.titleTag;
                     tagFound = true;
                     break; // Found our high-priority match, stop all searching
                 }
@@ -18,11 +16,9 @@
             if (!tagFound) {
                 const descriptionSearchText = description.toLowerCase();
                 for (const [keyword, rules] of keywordMap.entries()) {
-                    if (rules === "CONFLICT") continue;
-
-                    // Check if the keyword rules allow searching descriptions AND the description includes it
-                    if (rules.searchDescriptions && descriptionSearchText.includes(keyword)) {
-                        suggestedTag = rules.fullName;
+                    // Check if the description includes the keyword AND the rules have a valid, non-conflicted descriptionTag
+                    if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
+                        suggestedTag = rules.descriptionTag;
                         break; // Stop after the first description match
                     }
                 }
