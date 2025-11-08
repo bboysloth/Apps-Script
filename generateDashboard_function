@@ -25,10 +25,10 @@ function _formatMinutesToHours(totalMinutes) {
 /**
  * Generates the Visuals Dashboard.
  * WHY THE CHANGE (v2.6.1):
- * 1. Swapped Percentage (J) and Total Time (K) columns.
- * 2. Total Time (K) now shows the formatted "hr/min" string.
- * 3. Added a new hidden column (L) with raw minutes.
- * 4. "Total Time Spent" scorecard is now dynamic and reads from a new hidden sum (Col M).
+ * 1. Swapped Percentage (J) and Total Time (K) columns to the correct order.
+ * 2. Total Time (K) now shows the formatted "hr/min" string and a "-" when hidden.
+ * 3. Added a new hidden column (L) with raw minutes to power the dynamic formulas.
+ * 4. "Total Time Spent" scorecard is now DYNAMIC and reads from a new hidden sum (Col M).
  * 5. Fixed column widths for J and K.
  */
 function generateDashboard() {
@@ -47,7 +47,6 @@ function generateDashboard() {
   
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
-  // Read all 14 columns (A-N)
   const data = dataSheet.getRange(2, 1, lastRow - 1, 14).getValues();
   
   let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0;
@@ -77,8 +76,7 @@ function generateDashboard() {
 
   // --- Scorecard Section (Rows 3-4) ---
   const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
-  const scorecardValues = [total, external, internal, seLead, inPerson]; // Static values
-  
+  const scorecardValues = [total, external, internal, seLead, inPerson];
   let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
       visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
@@ -104,32 +102,32 @@ function generateDashboard() {
   if (sortedTags.length > 0) {
     const tableData = sortedTags.map(([tag, count]) => {
         const timeInMinutes = tagTime.get(tag) || 0;
-        // [Tag Name, Count, Formatted Time, Raw Minutes]
-        return [tag, count, _formatMinutesToHours(timeInMinutes), timeInMinutes];
+        // [Tag Name, Count, Raw Minutes]
+        return [tag, count, timeInMinutes];
     });
     
-    // Write Tag Name (H), Count (I), and Formatted Time (K)
+    // Write Tag Name (H), Count (I), and Raw Minutes (L - Hidden)
     visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); // H, I
-    visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); // K
+    visualsSheet.getRange(7, 12, tableData.length, 1).setValues(tableData.map(row => [row[2]])); // L
     
-    // Write hidden raw minutes to Col L
-    visualsSheet.getRange(7, 12, tableData.length, 1).setValues(tableData.map(row => [row[3]])); 
-    
-    // Insert Checkboxes
     visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
     
     const numRows = sortedTags.length;
     const formulas = [];
-    const timeFormulas = [];
     
     // Dynamic Formulas
     for (let i = 7; i < 7 + numRows; i++) {
-        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage (Col J)
-        timeFormulas.push([`=IF(G${i}=TRUE, 0, L${i})`]); // Hidden Time Sum (Col M)
+        // [Percentage (J), Total Time (K), Hidden Sum (M)]
+        formulas.push([
+            `=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`,
+            `=IF(G${i}=TRUE, "-", TEXT(L${i}/1440, "[h]'hr' m'min'"))`,
+            `=IF(G${i}=TRUE, 0, L${i})`
+        ]);
     }
-    visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col J
-    visualsSheet.getRange(7, 13, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col M
+    // Write formulas to J, K, and M
+    visualsSheet.getRange(7, 10, numRows, 3).setFormulas(formulas);
+    visualsSheet.getRange(7, 10, numRows, 1).setNumberFormat("0.0%"); // Percentage in Col J
     
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
   }
@@ -138,6 +136,7 @@ function generateDashboard() {
   visualsSheet.getRange("M4").setFormula("=SUM(M7:M)"); // Hidden SUM cell
   visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]'hr' m'min'")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
 
   // Hidden Chart Source (now N, O)
   visualsSheet.getRange("N6").setValue("Chart Source (Hidden)").setFontStyle("italic");
