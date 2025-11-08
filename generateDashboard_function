@@ -1,0 +1,130 @@
+function generateDashboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dataSheet = ss.getSheets()[0];
+  const visualsSheetName = "Visuals";
+  let visualsSheet = ss.getSheetByName(visualsSheetName);
+  if (!visualsSheet) { visualsSheet = ss.insertSheet(visualsSheetName); } 
+  else { 
+      visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
+      visualsSheet.clear(); 
+  }
+  
+  visualsSheet.showColumns(1, visualsSheet.getMaxColumns());
+  visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
+  
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
+  const data = dataSheet.getRange(2, 1, lastRow - 1, 14).getValues();
+  
+  let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0;
+  const tagCounts = new Map();
+  const tagTime = new Map(); 
+
+  data.forEach(row => {
+    if (row[3] === true) external++;
+    if (row[4] === true) seLead++;
+    if (row[5] === true) inPerson++;
+    
+    const tagName = row[6];
+    const duration = row[13];
+    
+    if (typeof duration === 'number') {
+        totalMinutes += duration;
+    }
+    
+    if (tagName && tagName.trim() !== "") { 
+        tagCounts.set(tagName, (tagCounts.get(tagName) || 0) + 1);
+        if (typeof duration === 'number') {
+            tagTime.set(tagName, (tagTime.get(tagName) || 0) + duration);
+        }
+    }
+  });
+  let internal = total - external;
+
+  // --- Scorecard Section (Rows 3-4) ---
+  const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
+  const scorecardValues = [total, external, internal, seLead, inPerson];
+  let currentCol = 1;
+  for (let i = 0; i < scorecardTitles.length; i++) {
+      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+      visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+      currentCol += 2;
+  }
+  const scRange = visualsSheet.getRange(4, 1, 1, 10);
+  let scRules = [
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
+  ];
+  visualsSheet.setConditionalFormatRules(scRules); // Set scorecard rules
+
+  // --- Interactive Tag Table (Starts at G6) ---
+  // --- FIX (v2.6.1): Swapped J and K ---
+  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("K6").setValue("Total Time").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  
+  const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
+  if (sortedTags.length > 0) {
+    const tableData = sortedTags.map(([tag, count]) => {
+        const timeInMinutes = tagTime.get(tag) || 0;
+        // We MUST use raw minutes here for the dynamic formula to work
+        return [tag, count, timeInMinutes];
+    });
+    
+    visualsSheet.getRange(7, 8, tableData.length, 3).setValues(tableData); // Write H, I, J (raw minutes)
+    visualsSheet.getRange(7, 10, tableData.length, 1).setNumberFormat(`0" min"`); // Format Col J as minutes
+    
+    visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
+    visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
+    
+    const numRows = sortedTags.length;
+    const formulas = [];
+    const timeFormulas = [];
+    
+    for (let i = 7; i < 7 + numRows; i++) {
+        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage
+        timeFormulas.push([`=IF(G${i}=TRUE, 0, J${i})`]); // Total Time (for dynamic sum)
+    }
+    visualsSheet.getRange(7, 11, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col K
+    visualsSheet.getRange(7, 12, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col L
+    
+    visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
+  }
+
+  // --- Dynamic "Total Time Spent" Scorecard ---
+  visualsSheet.getRange("L4").setFormula("=SUM(L7:L)");
+  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(L4/1440, "[h]'hr' m'min'")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+
+  // Hidden Chart Source (now M, N)
+  visualsSheet.getRange("M6").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("M7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  visualsSheet.hideColumns(12, 3); // Hide L, M, N
+
+  if (sortedTags.length > 0) {
+    const chartRange = visualsSheet.getRange("M7:N" + (7 + sortedTags.length));
+    const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
+      .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
+      .setOption('is3D', true)
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
+      .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
+      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
+      .setOption('height', 400).setOption('width', 700).setPosition(6, 1, 0, 0).build();
+    visualsSheet.insertChart(pieChart);
+  } else { visualsSheet.getRange("A6").setValue("No tagged meetings found."); }
+
+  const selectedQuarter = getConfig("QuarterOverride");
+  let dateString = `Last ${getConfig("DaysBack")} Days`;
+  if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
+  visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
+
+  visualsSheet.setColumnWidth(10, 120); // Col J (Total Time)
+  visualsSheet.setColumnWidth(11, 120); // Col K (Percentage)
+  visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I
+  ss.setActiveSheet(visualsSheet);
+}
