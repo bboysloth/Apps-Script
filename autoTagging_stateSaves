@@ -1,12 +1,11 @@
 /**
- * @file Meeting Tagger Tool v2.6.2
- * @description CRITICAL LOGIC FIXES.
- * 1. FIX: Auto-tagger now runs on ALL meetings and will OVERRIDE existing tags
- * if a keyword is found, correctly flagging the 'Synced' column as FALSE.
- * 2. FIX: 'Refresh Untagged List' now automatically calls the
- * 'updateTagDropdownsAndColors' function at the end to ensure chip colors
- * are never lost.
- * @version 2.6.2
+ * @file Meeting Tagger Tool v2.6.3
+ * @description CRITICAL LOGIC FIX & FEATURE.
+ * 1. FIX: 'updateMeetingTag' now correctly handles changes when NO tag is selected.
+ * This allows 'SE Lead' (a standalone property) to be saved even if 'Add Tag to Meeting' is blank.
+ * 'In Person' (a modifier) is still correctly tied to a tag being present.
+ * 2. FEATURE: Adds a blank "Clear Tag" option to the top of the 'Add Tag to Meeting' dropdown.
+ * @version 2.6.3
  */
 
 // =================================================================
@@ -152,7 +151,6 @@ function findEventsMissingTag() {
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
             
-            // --- FIX (v2.6.2): Auto-tagger logic updated ---
             let originalSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
             let originalInPerson = false;
             let originalTag = "";
@@ -172,22 +170,19 @@ function findEventsMissingTag() {
                 }
             }
             
-            // Set suggestions to default to the original values first
             let suggestedSeLead = originalSeLead;
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-            // NOW, run the auto-tagger and let it OVERRIDE the suggestedTag
             const searchText = (title + ' ' + description).toLowerCase();
             for (const [keyword, fullName] of keywordMap.entries()) {
                 if (searchText.includes(keyword)) {
                     if (fullName !== "CONFLICT") {
-                         suggestedTag = fullName; // Overwrite with suggestion
+                         suggestedTag = fullName; 
                     }
                     break;
                 }
             }
-            // --- END FIX ---
 
             let durationInMinutes = 0;
             if (event.end.dateTime && event.start.dateTime) {
@@ -201,12 +196,12 @@ function findEventsMissingTag() {
             
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
-                suggestedSeLead, suggestedInPerson, suggestedTag, // Visible: E, F, G
-                '', // H: Synced Placeholder
-                `=HYPERLINK("${event.htmlLink}", "Open Event")`, // I: Event Link
-                '', // J: Last Refreshed Placeholder
-                originalSeLead, originalInPerson, originalTag,   // K, L, M (Hidden Originals)
-                durationInMinutes // N: Duration (Hidden)
+                suggestedSeLead, suggestedInPerson, suggestedTag, 
+                '', 
+                `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
+                '', 
+                originalSeLead, originalInPerson, originalTag,
+                durationInMinutes
             ];
             
             if (showTaggedMeetings) {
@@ -244,7 +239,7 @@ function findEventsMissingTag() {
         // --- 7. Formatting ---
         _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
         
-        // --- FIX (v2.6.2): Force re-application of colors on every refresh ---
+        // --- Force re-application of colors on every refresh ---
         updateTagDropdownsAndColors(true); // Pass 'true' to run in silent mode
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
@@ -304,16 +299,17 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      const currentSeLead = rowData[4];    // Col E
-      const currentInPerson = rowData[5];  // Col F
-      const currentTag = rowData[6];       // Col G
-      const originalSeLead = rowData[10];  // Col K
-      const originalInPerson = rowData[11]; // Col L
-      const originalTag = rowData[12];     // Col M
+      const currentSeLead = rowData[4];
+      const currentInPerson = rowData[5];
+      const currentTag = rowData[6];
+      const originalSeLead = rowData[10];
+      const originalInPerson = rowData[11];
+      const originalTag = rowData[12];
 
       const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
-      if (hasChanged && currentTag) {
+      // --- FIX (v2.6.3): Allow save if 'hasChanged' is true, even if tag is blank ---
+      if (hasChanged) {
         const title = rowData[0];
         const startTime = new Date(rowData[1]).getTime();
         const lookupKey = `${title}_${startTime}`;
@@ -321,25 +317,38 @@ function updateMeetingTag(e, isSingleEditMode) {
 
         if (eventToUpdate) {
           let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+          
+          // 1. Always remove old tags and SE lead text
           const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
           description = description.replace(seLeadRegex, '').trim();
-          if (currentSeLead) description += "\n" + seLeadTag;
-
           const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          let abbreviatedTag = tagMap.get(currentTag); 
-          if (!abbreviatedTag) { SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet.`); continue; }
-          
-          if (currentInPerson && abbreviatedTag) {
-            let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
-            if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
-            let coreTag = abbreviatedTag.replace(';', '').trim();
-            abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+          // 2. Add new SE Lead text if checked
+          if (currentSeLead) {
+            description += "\n" + seLeadTag;
           }
           
-          description += "\n\n" + tagPrefix + abbreviatedTag;
+          // 3. ONLY add a tag if one is selected
+          if (currentTag && currentTag.trim() !== "") {
+            let abbreviatedTag = tagMap.get(currentTag); 
+            if (!abbreviatedTag) { 
+              SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet. Skipping row.`); 
+              continue; 
+            }
+            
+            // 4. Only add "In Person" modifier if a tag is ALSO present
+            if (currentInPerson && abbreviatedTag) {
+              let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+              if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+              let coreTag = abbreviatedTag.replace(';', '').trim();
+              abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+            }
+            description += "\n\n" + tagPrefix + abbreviatedTag;
+          }
+          // --- END FIX ---
+          
           Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
           rowsToDelete.push(i + 2);
           updatedCount++;
@@ -403,9 +412,6 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.setColumnWidth(3, 230);
     sheet.setColumnWidth(10, 300);
     sheet.hideColumns(11, 4); // Hide K, L, M, N
-
-    // This function no longer manages Conditional Formatting for G & H.
-    // It is all handled by `updateTagDropdownsAndColors` to prevent conflicts.
     
     if (configs.showTaggedMeetings) {
         if (noTagMeetings.length > 0) {
@@ -479,9 +485,7 @@ function updateQuarterDropdown() {
 
 /**
  * Admin function to build colored chip dropdowns.
- * WHY THE CHANGE (v2.6.1): This function is now fixed. It correctly
- * clears all rules, then re-adds the rules for the chips (Col G) AND
- * the rules for the 'Synced' column (Col H) at the same time.
+ * WHY THE CHANGE (v2.6.3): Adds a "blank" option to the top of the dropdown list.
  */
 function updateTagDropdownsAndColors(silentMode = false) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -496,7 +500,11 @@ function updateTagDropdownsAndColors(silentMode = false) {
     const lastTagRow = tagsSheet.getLastRow();
     const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
     const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
-    const tagNames = [], tagColors = [];
+    
+    // --- FIX (v2.6.3): Add a blank option to the top ---
+    const tagNames = [[""]]; // Start with a blank
+    const tagColors = [["#ffffff"]]; // White background for the blank
+    // --- END FIX ---
     
     // Filter out blank rows to prevent errors
     for (let i = 0; i < tagRawValues.length; i++) {
@@ -522,7 +530,6 @@ function updateTagDropdownsAndColors(silentMode = false) {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
-    // --- THIS IS THE FIX (v2.6.1) ---
     // This function must be the SOLE owner of rules for Col G and H.
     mainSheet.clearConditionalFormatRules();
     let rules = [];
@@ -530,7 +537,12 @@ function updateTagDropdownsAndColors(silentMode = false) {
     // 4. Build and add Chip Color rules (Col G)
     const dropdownRangeForRules = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
     tagNames.forEach((nameArr, i) => {
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
+        if (nameArr[0] === "") {
+          // Add a rule for the blank cell
+          rules.push(SpreadsheetApp.newConditionalFormatRule().whenCellEmpty().setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
+        } else {
+          rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
+        }
     });
 
     // 5. Build and add Synced rules (Col H)
@@ -540,7 +552,6 @@ function updateTagDropdownsAndColors(silentMode = false) {
     
     // 6. Apply ALL rules at once
     mainSheet.setConditionalFormatRules(rules);
-    // --- END OF FIX ---
 
     if (!silentMode) {
       ss.toast("Tag dropdowns and colors updated.");
@@ -571,7 +582,7 @@ function validateTagKeywords() {
     else {
         let msg = "Warning: Duplicate keywords found!\n";
         for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
-        SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
+        SpreadDApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
     }
 }
 
