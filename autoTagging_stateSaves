@@ -89,20 +89,31 @@ function findEventsMissingTag() {
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
-        const tagsData = tagsSheet.getRange("B2:E" + tagsSheet.getLastRow()).getValues();
+        // Read new columns F ("Titles") and G ("Descriptions")
+        const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
         const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
         const tagBackgrounds = tagColorRange.getBackgrounds();
         
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
         
+       // This map now stores an object with the rules: Map<Keyword, {fullName, searchTitles, searchDescriptions}>
         const keywordMap = new Map();
         tagsData.forEach(row => {
+            // row[1] = FullName (Col C), row[3] = Keywords (Col E)
+            // row[4] = Search Titles (Col F), row[5] = Search Descriptions (Col G)
             if (row[1] && row[3]) {
+                const rules = {
+                    fullName: row[1],
+                    searchTitles: row[4] === true, // Checkbox in Col F
+                    searchDescriptions: row[5] === true // Checkbox in Col G
+                };
+
                 row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                    if (keywordMap.has(k) && keywordMap.get(k) !== row[1] && keywordMap.get(k) !== "CONFLICT") {
+                    // Check fullName to avoid flagging conflicts on the *same tag*
+                    if (keywordMap.has(k) && keywordMap.get(k).fullName !== rules.fullName && keywordMap.get(k) !== "CONFLICT") {
                         keywordMap.set(k, "CONFLICT");
                     } else if (!keywordMap.has(k)) {
-                        keywordMap.set(k, row[1]);
+                        keywordMap.set(k, rules);
                     }
                 });
             }
@@ -174,15 +185,33 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-            const searchText = (title + ' ' + description).toLowerCase();
-            for (const [keyword, fullName] of keywordMap.entries()) {
-                if (searchText.includes(keyword)) {
-                    if (fullName !== "CONFLICT") {
-                         suggestedTag = fullName; 
-                    }
-                    break;
+       // --- New Auto-Tag Logic (v2.6.4) ---
+            // Separate the title and description for targeted searches
+            const titleSearchText = title.toLowerCase();
+            const descriptionSearchText = description.toLowerCase();
+
+            for (const [keyword, rules] of keywordMap.entries()) {
+                if (rules === "CONFLICT") continue; // Skip conflicted keywords
+
+                let matchFound = false;
+
+                // Check if the keyword rules allow searching titles, and if so, check the title
+                if (rules.searchTitles && titleSearchText.includes(keyword)) {
+                    matchFound = true;
+                }
+                
+                // Check if the keyword rules allow searching descriptions, and if so, check the description
+                if (rules.searchDescriptions && descriptionSearchText.includes(keyword)) {
+                    matchFound = true;
+                }
+
+                // If we found a match in either location (and rules allowed it), set the tag
+                if (matchFound) {
+                    suggestedTag = rules.fullName;
+                    break; // Stop after the first keyword match
                 }
             }
+            // --- End of new logic ---
 
             let durationInMinutes = 0;
             if (event.end.dateTime && event.start.dateTime) {
