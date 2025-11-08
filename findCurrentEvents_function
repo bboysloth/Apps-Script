@@ -1,0 +1,338 @@
+// =================================================================
+// #region 3. CORE LOGIC FUNCTIONS
+// =================================================================
+
+function findEventsMissingTag() {
+    const file = SpreadsheetApp.getActiveSpreadsheet();
+    try {
+        // --- 1. Configuration ---
+        const daysBack = parseInt(getConfig("DaysBack"), 10);
+        const daysAhead = parseInt(getConfig("DaysAhead"), 10);
+        const selectedQuarter = getConfig("QuarterOverride");
+        const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
+        const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
+        const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
+        const modifier = getConfig("InPersonModifier");
+        const seLeadTagText = getConfig("SELeadTagText");
+        const tagPrefix = "Verkada Meeting Tag: ";
+
+        // --- 2. Prepare tag data ---
+        const tagsSheet = file.getSheetByName("Tags");
+        // Read new columns F ("Titles") and G ("Descriptions")
+        const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
+        const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
+        const tagBackgrounds = tagColorRange.getBackgrounds();
+        
+        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
+        
+// This map now stores an object with the rules: Map<Keyword, {fullName, searchTitles, searchDescriptions}>
+        const keywordMap = new Map();
+        tagsData.forEach(row => {
+            // row[1] = FullName (Col C), row[3] = Keywords (Col E)
+            // row[4] = Search Titles (Col F), row[5] = Search Descriptions (Col G)
+            if (row[1] && row[3]) {
+                const rules = {
+                    fullName: row[1],
+                    searchTitles: row[4] === true, // Checkbox in Col F
+                    searchDescriptions: row[5] === true // Checkbox in Col G
+                };
+
+                // Only add keywords to the map if a search location is specified
+                if (rules.searchTitles || rules.searchDescriptions) {
+                    row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+                        // Check fullName to avoid flagging conflicts on the *same tag*
+                        if (keywordMap.has(k) && keywordMap.get(k) !== "CONFLICT" && keywordMap.get(k).fullName !== rules.fullName) {
+                            keywordMap.set(k, "CONFLICT");
+                        } else if (!keywordMap.has(k)) {
+                            keywordMap.set(k, rules);
+                        }
+                    });
+                }
+            }
+        });
+        
+        // --- 3. Date Logic ---
+        let start, end;
+        if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
+            const parts = selectedQuarter.replace(" (Current)", "").trim().match(/FY(\d{2})\s*Q(\d)/);
+            if (!parts) throw new Error(`Invalid quarter format: "${selectedQuarter}".`);
+            const dates = _getDatesForVerkadaFQ(parseInt(parts[1], 10) + 2000, parseInt(parts[2], 10));
+            start = dates.start; end = dates.end;
+        } else {
+            start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - daysBack);
+            end = new Date(); end.setHours(23, 59, 59, 999); end.setDate(end.getDate() + daysAhead);
+        }
+        
+        // --- 4. Fetch Events ---
+        const calendarId = CalendarApp.getDefaultCalendar().getId();
+        let allEvents = [], pageToken = null;
+        do {
+          const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 2500, pageToken: pageToken });
+          if (response.items) allEvents = allEvents.concat(response.items);
+          pageToken = response.nextPageToken;
+        } while (pageToken);
+
+        // --- 5. Process Events ---
+        const events = allEvents;
+        const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
+
+        for (const event of events) {
+            if (event.start.date) continue;
+            if (!event.summary) continue;
+            const title = event.summary;
+            if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
+            const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
+            // COMMENTED OUT TO SEE 'VCE Events' if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
+
+            const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
+            const allParticipants = [...new Set([organizerEmail, ...attendees])];
+            const isInternalEntity = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com") || email.toLowerCase().endsWith("@group.calendar.google.com"));
+            const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
+            if (externalFilter && isPurelyInternal) continue;
+            if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
+            
+            let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
+            const hasMainTag = description.includes(tagPrefix);
+            
+            let originalSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
+            let originalInPerson = false;
+            let originalTag = "";
+            let hasSETagInDescription = false;
+            
+            if (hasMainTag) {
+                const lines = description.split('\n');
+                const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
+                if (tagLine) {
+                    hasSETagInDescription = tagLine.includes("(SE)");
+                    let abbreviatedTag = tagLine.trim().substring(tagPrefix.length).trim();
+                    if (modifier && abbreviatedTag.includes(modifier)) {
+                      originalInPerson = true;
+                    }
+                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
+                    originalTag = tagMap.get(lookupKey) || "";
+                }
+            }
+            
+            let suggestedSeLead = originalSeLead;
+            let suggestedInPerson = originalInPerson;
+            let suggestedTag = originalTag;
+
+       // --- New Auto-Tag Logic (v2.6.4) ---
+            // Separate the title and description for targeted searches
+            const titleSearchText = title.toLowerCase();
+            const descriptionSearchText = description.toLowerCase();
+
+            for (const [keyword, rules] of keywordMap.entries()) {
+                if (rules === "CONFLICT") continue; // Skip conflicted keywords
+
+                let matchFound = false;
+
+                // Check if the keyword rules allow searching titles, and if so, check the title
+                if (rules.searchTitles && titleSearchText.includes(keyword)) {
+                    matchFound = true;
+                }
+                
+                // Check if the keyword rules allow searching descriptions, and if so, check the description
+                if (rules.searchDescriptions && descriptionSearchText.includes(keyword)) {
+                    matchFound = true;
+                }
+
+                // If we found a match in either location (and rules allowed it), set the tag
+                if (matchFound) {
+                    suggestedTag = rules.fullName;
+                    break; // Stop after the first keyword match
+                }
+            }
+            // --- End of new logic ---
+
+            let durationInMinutes = 0;
+            if (event.end.dateTime && event.start.dateTime) {
+                const eventStartTimeMs = new Date(event.start.dateTime).getTime();
+                const eventEndTimeMs = new Date(event.end.dateTime).getTime();
+                durationInMinutes = Math.round((eventEndTimeMs - eventStartTimeMs) / 60000);
+            }
+            
+            const eventStartTime = new Date(event.start.dateTime || event.start.date);
+            const hasExternalAttendee = !isPurelyInternal;
+            
+            const rowData = [
+                title, eventStartTime, organizerEmail, hasExternalAttendee, 
+                suggestedSeLead, suggestedInPerson, suggestedTag, 
+                '', 
+                `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
+                '', 
+                originalSeLead, originalInPerson, originalTag,
+                durationInMinutes
+            ];
+            
+            if (showTaggedMeetings) {
+                if (hasMainTag) { fullyTaggedMeetings.push(rowData); } 
+                else { noTagMeetings.push(rowData); }
+            } else if (seTaggingMode) {
+                if (hasSETagInDescription) { /* Hide */ } 
+                else if (hasMainTag) { aeTaggedMeetings.push(rowData); } 
+                else { noTagMeetings.push(rowData); }
+            } else {
+                if (!hasMainTag) { noTagMeetings.push(rowData); }
+            }
+        }
+        
+        // --- 6. Write Results ---
+        const sheet = file.getSheets()[0];
+        if (sheet.getLastRow() > 0) {
+             sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
+        }
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)"];
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+        
+        const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
+        if (finalList.length > 0) { 
+            sheet.getRange(2, 1, finalList.length, headers.length).setValues(finalList); 
+            const numRows = finalList.length;
+            const formulas = [];
+            for (let i = 2; i <= numRows + 1; i++) {
+                 formulas.push([`=AND(E${i}=K${i}, F${i}=L${i}, G${i}=M${i})`]);
+            }
+            sheet.getRange(2, 8, numRows, 1).setFormulas(formulas);
+        }
+        else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
+        
+        // --- 7. Formatting ---
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        
+        // --- Force re-application of colors on every refresh ---
+        updateTagDropdownsAndColors(true); // Pass 'true' to run in silent mode
+        
+    } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
+}
+
+function updateMeetingTag(e, isSingleEditMode) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  try {
+    if (isSingleEditMode) {
+      const range = e.range;
+      if (range.getRow() <= 1) return;
+      const editedCol = range.getColumn();
+      const sheetName = sheet.getName();
+      if (sheetName !== ss.getSheets()[0].getName()) return;
+
+      if (editedCol === 5 || editedCol === 6) {
+        if (e.value === "TRUE") range.setBackground('#d9ead3');
+        else range.setBackground('#ffffff');
+      }
+      return; 
+    }
+
+    ss.toast("Processing batch... Please wait.");
+    const tagPrefix = "Verkada Meeting Tag: ";
+    const seLeadTag = getConfig("SELeadTagText");
+    const modifier = getConfig("InPersonModifier");
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) { ss.toast("No data to process."); return; }
+    
+    const tagsSheet = ss.getSheetByName("Tags");
+    const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
+
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues(); // Read 14 columns
+    const calendarId = CalendarApp.getDefaultCalendar().getId();
+    
+    const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
+    if (eventTimes.length === 0) { ss.toast("No valid dates found to process."); return; }
+    const minTime = new Date(Math.min(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
+    maxTime.setHours(23, 59, 59);
+
+    let allEventsForMap = [];
+    let pageToken = null;
+    do {
+      const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true, maxResults: 2500, pageToken: pageToken });
+      if (response.items) allEventsForMap = allEventsForMap.concat(response.items);
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    const eventMap = new Map();
+    allEventsForMap.forEach(event => eventMap.set(`${event.summary}_${new Date(event.start.dateTime || event.start.date).getTime()}`, event));
+
+    const rowsToDelete = [];
+    let updatedCount = 0;
+    
+    for (let i = 0; i < sheetData.length; i++) {
+      const rowData = sheetData[i];
+      const currentSeLead = rowData[4];
+      const currentInPerson = rowData[5];
+      const currentTag = rowData[6];
+      const originalSeLead = rowData[10];
+      const originalInPerson = rowData[11];
+      const originalTag = rowData[12];
+
+      const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
+
+      // --- FIX (v2.6.3): Allow save if 'hasChanged' is true, even if tag is blank ---
+      if (hasChanged) {
+        const title = rowData[0];
+        const startTime = new Date(rowData[1]).getTime();
+        const lookupKey = `${title}_${startTime}`;
+        const eventToUpdate = eventMap.get(lookupKey);
+
+        if (eventToUpdate) {
+          let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+          
+          // 1. Always remove old tags and SE lead text
+          const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
+          description = description.replace(seLeadRegex, '').trim();
+          const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
+          description = description.replace(aggressiveRemovalRegex, '');
+          description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
+
+          // 2. Add new SE Lead text if checked
+          if (currentSeLead) {
+            description += "\n" + seLeadTag;
+          }
+          
+          // 3. ONLY add a tag if one is selected
+          if (currentTag && currentTag.trim() !== "") {
+            let abbreviatedTag = tagMap.get(currentTag); 
+            if (!abbreviatedTag) { 
+              SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet. Skipping row.`); 
+              continue; 
+            }
+            
+            // 4. Only add "In Person" modifier if a tag is ALSO present
+            if (currentInPerson && abbreviatedTag) {
+              let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+              if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+              let coreTag = abbreviatedTag.replace(';', '').trim();
+              abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+            }
+            description += "\n\n" + tagPrefix + abbreviatedTag;
+          }
+          // --- END FIX ---
+          
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          rowsToDelete.push(i + 2);
+          updatedCount++;
+        }
+      }
+    }
+
+    if (updatedCount > 0) {
+      const numDataRows = lastRow - 1;
+      if (updatedCount === numDataRows && rowsToDelete.length === numDataRows) {
+        sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).clearContent();
+      } else {
+        rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      }
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
+    } else {
+      ss.toast("No changes were detected to apply.");
+    }
+
+  } catch (err) { SpreadsheetApp.getUi().alert(err.message); }
+}
+// #endregion
