@@ -111,7 +111,7 @@ function findEventsMissingTag() {
         // --- 3. Date Logic ---
         let start, end;
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
-            const parts = selectedQuarter.match(/FY(\d{2})\s*Q(\d)/);
+            const parts = selectedQuarter.replace(" (Current)", "").trim().match(/FY(\d{2})\s*Q(\d)/);
             if (!parts) throw new Error(`Invalid quarter format: "${selectedQuarter}".`);
             const dates = _getDatesForVerkadaFQ(parseInt(parts[1], 10) + 2000, parseInt(parts[2], 10));
             start = dates.start; end = dates.end;
@@ -139,7 +139,7 @@ function findEventsMissingTag() {
             const title = event.summary;
             if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
-            if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
+            // COMMENTED OUT TO SEE 'VCE Events' if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
