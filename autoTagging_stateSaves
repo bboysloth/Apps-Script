@@ -575,6 +575,39 @@ function validateTagKeywords() {
     }
 }
 
+// =================================================================
+// #region 6. VISUALS DASHBOARD FUNCTIONS
+// =================================================================
+
+/**
+ * NEW (v2.6.0): Helper function to format minutes into a "Xhr Ymin" string.
+ * @param {number} totalMinutes The total minutes to format.
+ * @returns {string} A human-readable time string.
+ */
+function _formatMinutesToHours(totalMinutes) {
+  if (totalMinutes === 0) return "0min";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  
+  let result = "";
+  if (hours > 0) {
+    result += `${hours}hr`;
+  }
+  if (minutes > 0) {
+    result += ` ${minutes}min`;
+  }
+  return result.trim();
+}
+
+/**
+ * Generates the Visuals Dashboard.
+ * WHY THE CHANGE (v2.6.1):
+ * 1. Swapped Percentage (J) and Total Time (K) columns.
+ * 2. Total Time (K) now shows the formatted "hr/min" string.
+ * 3. Added a new hidden column (L) with raw minutes.
+ * 4. "Total Time Spent" scorecard is now dynamic and reads from a new hidden sum (Col M).
+ * 5. Fixed column widths for J and K.
+ */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheets()[0];
@@ -591,6 +624,7 @@ function generateDashboard() {
   
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
+  // Read all 14 columns (A-N)
   const data = dataSheet.getRange(2, 1, lastRow - 1, 14).getValues();
   
   let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0;
@@ -620,7 +654,8 @@ function generateDashboard() {
 
   // --- Scorecard Section (Rows 3-4) ---
   const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
-  const scorecardValues = [total, external, internal, seLead, inPerson];
+  const scorecardValues = [total, external, internal, seLead, inPerson]; // Static values
+  
   let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
       visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
@@ -636,7 +671,6 @@ function generateDashboard() {
   visualsSheet.setConditionalFormatRules(scRules); // Set scorecard rules
 
   // --- Interactive Tag Table (Starts at G6) ---
-  // --- FIX (v2.6.1): Swapped J and K ---
   visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
@@ -647,13 +681,18 @@ function generateDashboard() {
   if (sortedTags.length > 0) {
     const tableData = sortedTags.map(([tag, count]) => {
         const timeInMinutes = tagTime.get(tag) || 0;
-        // We MUST use raw minutes here for the dynamic formula to work
-        return [tag, count, timeInMinutes];
+        // [Tag Name, Count, Formatted Time, Raw Minutes]
+        return [tag, count, _formatMinutesToHours(timeInMinutes), timeInMinutes];
     });
     
-    visualsSheet.getRange(7, 8, tableData.length, 3).setValues(tableData); // Write H, I, J (raw minutes)
-    visualsSheet.getRange(7, 10, tableData.length, 1).setNumberFormat(`0" min"`); // Format Col J as minutes
+    // Write Tag Name (H), Count (I), and Formatted Time (K)
+    visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); // H, I
+    visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); // K
     
+    // Write hidden raw minutes to Col L
+    visualsSheet.getRange(7, 12, tableData.length, 1).setValues(tableData.map(row => [row[3]])); 
+    
+    // Insert Checkboxes
     visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
     
@@ -661,29 +700,29 @@ function generateDashboard() {
     const formulas = [];
     const timeFormulas = [];
     
+    // Dynamic Formulas
     for (let i = 7; i < 7 + numRows; i++) {
-        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage
-        timeFormulas.push([`=IF(G${i}=TRUE, 0, J${i})`]); // Total Time (for dynamic sum)
+        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage (Col J)
+        timeFormulas.push([`=IF(G${i}=TRUE, 0, L${i})`]); // Hidden Time Sum (Col M)
     }
-    visualsSheet.getRange(7, 11, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col K
-    visualsSheet.getRange(7, 12, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col L
+    visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col J
+    visualsSheet.getRange(7, 13, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col M
     
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
   }
 
-  // --- Dynamic "Total Time Spent" Scorecard ---
-  visualsSheet.getRange("L4").setFormula("=SUM(L7:L)");
+// --- Dynamic "Total Time Spent" Scorecard ---
+  visualsSheet.getRange("M4").setFormula("=SUM(M7:M)"); // Hidden SUM cell
   visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(L4/1440, "[h]'hr' m'min'")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-
-  // Hidden Chart Source (now M, N)
-  visualsSheet.getRange("M6").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("M7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
-  visualsSheet.hideColumns(12, 3); // Hide L, M, N
+  // Hidden Chart Source (now N, O)
+  visualsSheet.getRange("N6").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("N7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  visualsSheet.hideColumns(12, 4); // Hide L, M, N, O
 
   if (sortedTags.length > 0) {
-    const chartRange = visualsSheet.getRange("M7:N" + (7 + sortedTags.length));
+    const chartRange = visualsSheet.getRange("N7:O" + (7 + sortedTags.length));
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
@@ -700,9 +739,10 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(10, 120); // Col J (Total Time)
-  visualsSheet.setColumnWidth(11, 120); // Col K (Percentage)
+  visualsSheet.setColumnWidth(10, 120); // Col J (Percentage)
+  visualsSheet.setColumnWidth(11, 120); // Col K (Total Time)
   visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I
   ss.setActiveSheet(visualsSheet);
 }
+
 // #endregion
