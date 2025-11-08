@@ -1,4 +1,4 @@
-// --- New Auto-Tag Logic (v2.6.4 - Title Priority) ---
+// --- New Auto-Tag Logic (v2.6.5 - Title Priority Fix) ---
             const titleSearchText = title.toLowerCase();
             let tagFound = false;
 
