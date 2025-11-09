@@ -96,25 +96,41 @@ function findEventsMissingTag() {
         
         const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
         
-       // This map now stores an object with the rules: Map<Keyword, {fullName, searchTitles, searchDescriptions}>
+// This map now stores an object with the rules: Map<Keyword, {titleTag, descriptionTag}>
         const keywordMap = new Map();
         tagsData.forEach(row => {
             // row[1] = FullName (Col C), row[3] = Keywords (Col E)
             // row[4] = Search Titles (Col F), row[5] = Search Descriptions (Col G)
-            if (row[1] && row[3]) {
-                const rules = {
-                    fullName: row[1],
-                    searchTitles: row[4] === true, // Checkbox in Col F
-                    searchDescriptions: row[5] === true // Checkbox in Col G
-                };
+            const fullName = row[1];
+            const keywords = row[3];
+            const searchTitles = row[4] === true;
+            const searchDescriptions = row[5] === true;
 
-                row[3].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                    // Check fullName to avoid flagging conflicts on the *same tag*
-                    if (keywordMap.has(k) && keywordMap.get(k).fullName !== rules.fullName && keywordMap.get(k) !== "CONFLICT") {
-                        keywordMap.set(k, "CONFLICT");
-                    } else if (!keywordMap.has(k)) {
-                        keywordMap.set(k, rules);
+            if (fullName && keywords && (searchTitles || searchDescriptions)) {
+                keywords.split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+                    // Get the existing entry for this keyword, or create a new one
+                    const entry = keywordMap.get(k) || { titleTag: null, descriptionTag: null };
+
+                    if (searchTitles) {
+                        if (!entry.titleTag) {
+                            // 1. This is the first tag to claim this keyword in a Title.
+                            entry.titleTag = fullName;
+                        } else if (entry.titleTag !== fullName) {
+                            // 2. Conflict: A different tag already claimed this keyword in a Title.
+                            entry.titleTag = "CONFLICT";
+                        }
                     }
+                    
+                    if (searchDescriptions) {
+                        if (!entry.descriptionTag) {
+                            // 3. This is the first tag to claim this keyword in a Description.
+                            entry.descriptionTag = fullName;
+                        } else if (entry.descriptionTag !== fullName) {
+                            // 4. Conflict: A different tag already claimed this keyword in a Description.
+                            entry.descriptionTag = "CONFLICT";
+                        }
+                    }
+                    keywordMap.set(k, entry);
                 });
             }
         });
@@ -185,30 +201,29 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-       // --- New Auto-Tag Logic (v2.6.4) ---
-            // Separate the title and description for targeted searches
+// --- New Auto-Tag Logic (v2.6.5 - Title Priority Fix) ---
             const titleSearchText = title.toLowerCase();
-            const descriptionSearchText = description.toLowerCase();
+            let tagFound = false;
 
+            // Loop 1: Check Titles first for high priority
             for (const [keyword, rules] of keywordMap.entries()) {
-                if (rules === "CONFLICT") continue; // Skip conflicted keywords
-
-                let matchFound = false;
-
-                // Check if the keyword rules allow searching titles, and if so, check the title
-                if (rules.searchTitles && titleSearchText.includes(keyword)) {
-                    matchFound = true;
+                // Check if the title includes the keyword AND the rules have a valid, non-conflicted titleTag
+                if (rules.titleTag && rules.titleTag !== "CONFLICT" && titleSearchText.includes(keyword)) {
+                    suggestedTag = rules.titleTag;
+                    tagFound = true;
+                    break; // Found our high-priority match, stop all searching
                 }
-                
-                // Check if the keyword rules allow searching descriptions, and if so, check the description
-                if (rules.searchDescriptions && descriptionSearchText.includes(keyword)) {
-                    matchFound = true;
-                }
+            }
 
-                // If we found a match in either location (and rules allowed it), set the tag
-                if (matchFound) {
-                    suggestedTag = rules.fullName;
-                    break; // Stop after the first keyword match
+            // Loop 2: Check Descriptions only if no title match was found
+            if (!tagFound) {
+                const descriptionSearchText = description.toLowerCase();
+                for (const [keyword, rules] of keywordMap.entries()) {
+                    // Check if the description includes the keyword AND the rules have a valid, non-conflicted descriptionTag
+                    if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
+                        suggestedTag = rules.descriptionTag;
+                        break; // Stop after the first description match
+                    }
                 }
             }
             // --- End of new logic ---
@@ -611,7 +626,7 @@ function validateTagKeywords() {
     else {
         let msg = "Warning: Duplicate keywords found!\n";
         for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
-        SpreadDApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
+        SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
     }
 }
 
