@@ -1,11 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.6.3
+ * @file Meeting Tagger Tool v2.7.1
  * @description CRITICAL LOGIC FIX & FEATURE.
- * 1. FIX: 'updateMeetingTag' now correctly handles changes when NO tag is selected.
- * This allows 'SE Lead' (a standalone property) to be saved even if 'Add Tag to Meeting' is blank.
- * 'In Person' (a modifier) is still correctly tied to a tag being present.
- * 2. UPDATE: Skip "Out of Office" events
- * @version 2.6.3
+ * 1. added 'AttendanceFilter' logic to filter meetings list and exclude meetings from
+ * being counted if you did NOT attend the meeting or replied as 'tentative' (Maybe)
+ * @version 2.7.1
  */
 
 // =================================================================
@@ -88,6 +86,7 @@ function findEventsMissingTag() {
         const modifier = getConfig("InPersonModifier");
         const seLeadTagText = getConfig("SELeadTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
+        const attendanceFilter = getConfig("AttendanceFilter");
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
@@ -151,6 +150,7 @@ function findEventsMissingTag() {
         
         // --- 4. Fetch Events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
+        const userEmail = Session.getActiveUser().getEmail().toLowerCase();
         let allEvents = [], pageToken = null;
         do {
           const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 2500, pageToken: pageToken });
@@ -177,6 +177,26 @@ function findEventsMissingTag() {
             const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
             if (externalFilter && isPurelyInternal) continue;
             if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
+
+            // --- NEW (v2.6.4): Filter by Attendance Status ---
+            if (attendanceFilter === "Show Only Accepted/Maybe") {
+                let myStatus = "none"; // Default if user is not on the invite
+
+                if (organizerEmail.toLowerCase() === userEmail) {
+                    myStatus = "organizer";
+                } else if (event.attendees) {
+                    const me = event.attendees.find(a => a.email.toLowerCase() === userEmail);
+                    if (me) {
+                        myStatus = me.responseStatus; // "accepted", "tentative", "declined", "needsAction"
+                    }
+                }
+                
+                // Keep the event ONLY if status is one of the "good" ones
+                if (!["accepted", "tentative", "organizer"].includes(myStatus)) {
+                    continue; // Skip this event
+                }
+            }
+            // --- End of new filter ---
             
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
