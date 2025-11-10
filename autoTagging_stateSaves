@@ -4,7 +4,7 @@
  * 1. FIX: 'updateMeetingTag' now correctly handles changes when NO tag is selected.
  * This allows 'SE Lead' (a standalone property) to be saved even if 'Add Tag to Meeting' is blank.
  * 'In Person' (a modifier) is still correctly tied to a tag being present.
- * 2. FEATURE: Adds a blank "Clear Tag" option to the top of the 'Add Tag to Meeting' dropdown.
+ * 2. UPDATE: Skip "Out of Office" events
  * @version 2.6.3
  */
 
@@ -80,6 +80,8 @@ function findEventsMissingTag() {
         const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
         const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
@@ -162,11 +164,12 @@ function findEventsMissingTag() {
 
         for (const event of events) {
             if (event.start.date) continue;
+            if (event.eventType === 'outOfOffice') continue; // NEW: Skip "Out of Office" events
             if (!event.summary) continue;
             const title = event.summary;
             if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
-            // COMMENTED OUT TO SEE 'VCE Events' if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
+            // COMMENTED OUT TO SEE 'VCE Events' -- if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
@@ -223,6 +226,29 @@ function findEventsMissingTag() {
                     if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
                         suggestedTag = rules.descriptionTag;
                         break; // Stop after the first description match
+                    }
+                }
+            }
+            // --- End of new logic ---
+
+            // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.5) ---
+            // We use the full text search here, as title/description priority is only for the tag itself.
+            const fullSearchText = (title + ' ' + description).toLowerCase();
+
+            // 1. Auto-suggest SE Lead (runs regardless of tag)
+            for (const keyword of autoSeLeadKeywords) {
+                if (fullSearchText.includes(keyword)) {
+                    suggestedSeLead = true;
+                    break; // Stop after first match
+                }
+            }
+            
+            // 2. Auto-suggest In Person (ONLY runs if a tag is present or suggested)
+            if (suggestedTag) {
+                for (const keyword of autoInPersonKeywords) {
+                    if (fullSearchText.includes(keyword)) {
+                        suggestedInPerson = true;
+                        break; // Stop after first match
                     }
                 }
             }
