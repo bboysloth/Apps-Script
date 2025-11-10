@@ -1,9 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.7.1
+ * @file Meeting Tagger Tool v2.7.2
  * @description CRITICAL LOGIC FIX & FEATURE.
- * 1. added 'AttendanceFilter' logic to filter meetings list and exclude meetings from
- * being counted if you did NOT attend the meeting or replied as 'tentative' (Maybe)
- * @version 2.7.1
+ * 1. small bug fix
+ * @version 2.7.2
  */
 
 // =================================================================
