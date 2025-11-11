@@ -1,8 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.7.3
+ * @file Meeting Tagger Tool v2.7.4
  * @description CRITICAL LOGIC FIX & FEATURE.
- * 1. added URL stripping from keyword auto-tagging
- * @version 2.7.3
+ * 1. FIX (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
+ * @version 2.7.4
  */
 
 // =================================================================
@@ -256,6 +256,7 @@ function findEventsMissingTag() {
             // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.6) ---
             // We use the full text search here, as title/description priority is only for the tag itself.
             if (tagFound) { // If we skipped Loop 2, we still need to define descriptionSearchText
+            // Exclude URLS from creating a search match
             descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             }
             const fullSearchText = (titleSearchText + ' ' + descriptionSearchText);
@@ -444,7 +445,8 @@ function updateMeetingTag(e, isSingleEditMode) {
           }
           // --- END FIX ---
           
-          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          // --- FIX (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id, { sendUpdates: "none" });
           rowsToDelete.push(i + 2);
           updatedCount++;
         }
