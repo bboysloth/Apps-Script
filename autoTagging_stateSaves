@@ -1,8 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.7.2
+ * @file Meeting Tagger Tool v2.7.3
  * @description CRITICAL LOGIC FIX & FEATURE.
- * 1. small bug fix
- * @version 2.7.2
+ * 1. added URL stripping from keyword auto-tagging
+ * @version 2.7.3
  */
 
 // =================================================================
@@ -223,9 +223,11 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-// --- New Auto-Tag Logic (v2.6.5 - Title Priority Fix) ---
-            const titleSearchText = title.toLowerCase();
+// --- New Auto-Tag Logic (v2.6.6 - Title Priority Fix) ---
+            // Exclude URLS from creating a search match
+            const titleSearchText = title.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             let tagFound = false;
+            let descriptionSearchText = ""; // Define it here
 
             // Loop 1: Check Titles first for high priority
             for (const [keyword, rules] of keywordMap.entries()) {
@@ -239,7 +241,8 @@ function findEventsMissingTag() {
 
             // Loop 2: Check Descriptions only if no title match was found
             if (!tagFound) {
-                const descriptionSearchText = description.toLowerCase();
+                // Exclude URLS from creating a search match
+                descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
                 for (const [keyword, rules] of keywordMap.entries()) {
                     // Check if the description includes the keyword AND the rules have a valid, non-conflicted descriptionTag
                     if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
@@ -250,9 +253,12 @@ function findEventsMissingTag() {
             }
             // --- End of new logic ---
 
-            // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.5) ---
+            // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.6) ---
             // We use the full text search here, as title/description priority is only for the tag itself.
-            const fullSearchText = (title + ' ' + description).toLowerCase();
+            if (tagFound) { // If we skipped Loop 2, we still need to define descriptionSearchText
+            descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
+            }
+            const fullSearchText = (titleSearchText + ' ' + descriptionSearchText);
 
             // 1. Auto-suggest SE Lead (runs regardless of tag)
             for (const keyword of autoSeLeadKeywords) {
