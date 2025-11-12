@@ -1,8 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.7.4
- * @description CRITICAL LOGIC FIX & FEATURE.
- * 1. FIX (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
- * @version 2.7.4
+ * @file Meeting Tagger Tool v2.7.5
+ * @description Ultimate Meeting Tag Monitoring at your fingertips.
+ * Previous (v2.7.3) : added URL stripping from keyword auto-tagging results
+ * Previous (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
+ * 1. -- Added Flag to indicate unsaved changes to the tag as a helper for 'Config: Update Tag Dropdowns & Colors'
+ * @version 2.7.5
  */
 
 // =================================================================
@@ -652,6 +654,17 @@ function updateTagDropdownsAndColors(silentMode = false) {
 
     if (!silentMode) {
       ss.toast("Tag dropdowns and colors updated.");
+      // --- FIX (v2.7.5): Reset the "dirty" flag in cell A1 ---
+      try {
+        const flagCell = tagsSheet.getRange("H1");
+        flagCell.setValue("SAVED")
+                .setBackground("#d9ead3") // Green
+                .setFontWeight("bold")
+                .setHorizontalAlignment("center");
+      } catch (e) {
+        // Fail silently
+      }
+      // --- END FIX ---
     }
 }
 
@@ -682,6 +695,33 @@ function validateTagKeywords() {
         SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
     }
 }
+
+// =================================================================
+// #region 5a. TAG DROPDOWN UPDATE NEEDED LISTENER
+// =================================================================
+
+/**
+ * NEW (v2.7.5): Trigger function that runs *only* when the "Tags" sheet is edited.
+ * It sets a visual "dirty" flag in cell A1 to remind the user
+ * to run "Update Tag Dropdowns & Colors".
+ */
+function onEditTagsSheet(e) {
+  const sheet = e.range.getSheet();
+  
+  // Only run if the edit was on the "Tags" sheet
+  if (sheet.getName() === "Tags") {
+    try {
+      const flagCell = sheet.getRange("H1");
+      flagCell.setValue("CHANGES DETECTED")
+              .setBackground("#f4cccc") // Red
+              .setFontWeight("bold")
+              .setHorizontalAlignment("center");
+    } catch (err) {
+      // Fail silently if it can't write to A1
+    }
+  }
+}
+
 
 // =================================================================
 // #region 6. VISUALS DASHBOARD FUNCTIONS
