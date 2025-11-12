@@ -353,7 +353,7 @@ function updateMeetingTag(e, isSingleEditMode) {
       if (range.getRow() <= 1) return;
       const editedCol = range.getColumn();
       const sheetName = sheet.getName();
-      if (sheetName !== ss.getSheets()[0].getName()) return;
+      if (sheetName !== "Untagged Meetings") return;
 
       if (editedCol === 5 || editedCol === 6) {
         if (e.value === "TRUE") range.setBackground('#d9ead3');
