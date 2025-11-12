@@ -1,10 +1,11 @@
 /**
- * @file Meeting Tagger Tool v2.7.5
+ * @file Meeting Tagger Tool v2.7.6
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
  * Previous (v2.7.3) : added URL stripping from keyword auto-tagging results
  * Previous (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
- * 1. -- Added Flag to indicate unsaved changes to the tag as a helper for 'Config: Update Tag Dropdowns & Colors'
- * @version 2.7.5
+ * Previous (v2.7.5) Added Flag to indicate unsaved changes to the tag as a helper for 'Config: Update Tag Dropdowns & Colors'
+ * 1. removed references to 'getSheets()[0] and replaced them with more resilient 'getSheetByName("Untagged Meetings");'
+ * @version 2.7.6
  */
 
 // =================================================================
@@ -315,7 +316,7 @@ function findEventsMissingTag() {
         }
         
         // --- 6. Write Results ---
-        const sheet = file.getSheets()[0];
+        const sheet = file.getSheetByName("Untagged Meetings");
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
@@ -345,7 +346,7 @@ function findEventsMissingTag() {
 
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheetByName("Untagged Meetings");
   try {
     if (isSingleEditMode) {
       const range = e.range;
@@ -589,7 +590,7 @@ function updateQuarterDropdown() {
 function updateTagDropdownsAndColors(silentMode = false) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
-    const mainSheet = ss.getSheets()[0];
+    const mainSheet = ss.getSheetByName("Untagged Meetings");
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
     if (!silentMode) {
       ss.toast("Updating tag dropdowns and colors...");
@@ -758,7 +759,7 @@ function _formatMinutesToHours(totalMinutes) {
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const dataSheet = ss.getSheets()[0];
+  const dataSheet = ss.getSheetByName("Untagged Meetings");
   const visualsSheetName = "Visuals";
   let visualsSheet = ss.getSheetByName(visualsSheetName);
   if (!visualsSheet) { visualsSheet = ss.insertSheet(visualsSheetName); } 
