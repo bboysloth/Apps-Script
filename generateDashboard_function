@@ -3,7 +3,7 @@
 // =================================================================
 
 /**
- * NEW (v2.6.0): Helper function to format minutes into a "Xhr Ymin" string.
+ * NEW (v2.6.2): Helper function to format minutes into a "Xhr Ymin" string.
  * @param {number} totalMinutes The total minutes to format.
  * @returns {string} A human-readable time string.
  */
@@ -33,7 +33,7 @@ function _formatMinutesToHours(totalMinutes) {
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const dataSheet = ss.getSheets()[0];
+  const dataSheet = ss.getSheetByName("Untagged Meetings");
   const visualsSheetName = "Visuals";
   let visualsSheet = ss.getSheetByName(visualsSheetName);
   if (!visualsSheet) { visualsSheet = ss.insertSheet(visualsSheetName); } 
@@ -98,7 +98,7 @@ function generateDashboard() {
   visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("K6").setValue("Total Time").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("K6").setValue("Time Per Tag").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
@@ -136,7 +136,7 @@ function generateDashboard() {
 
 // --- Dynamic "Total Time Spent" Scorecard ---
   visualsSheet.getRange("M4").setFormula("=SUM(M7:M)"); // Hidden SUM cell
-  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
   // Hidden Chart Source (now N, O)
