@@ -24,12 +24,12 @@ function _formatMinutesToHours(totalMinutes) {
 
 /**
  * Generates the Visuals Dashboard.
- * WHY THE CHANGE (v2.6.1):
- * 1. Swapped Percentage (J) and Total Time (K) columns.
- * 2. Total Time (K) now shows the formatted "hr/min" string.
- * 3. Added a new hidden column (L) with raw minutes.
- * 4. "Total Time Spent" scorecard is now dynamic and reads from a new hidden sum (Col M).
- * 5. Fixed column widths for J and K.
+ * WHY THE CHANGE (v2.7.7):
+ * 1. Rearranged scorecards to the user's preferred layout.
+ * 2. "Total Time Spent" is now in G-H.
+ * 3. "In Person Mtgs" is in I-J.
+ * 4. "SE Lead Mtgs" is in K-L.
+ * 5. This is a layout-only change and does not affect any data logic.
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -76,8 +76,10 @@ function generateDashboard() {
   let internal = total - external;
 
   // --- Scorecard Section (Rows 3-4) ---
-  const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings", "SE Lead Mtgs", "In Person Mtgs"];
-  const scorecardValues = [total, external, internal, seLead, inPerson]; // Static values
+  
+  // 1. Build the first 3 static scorecards (A-F)
+  const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings"];
+  const scorecardValues = [total, external, internal];
   
   let currentCol = 1;
   for (let i = 0; i < scorecardTitles.length; i++) {
@@ -85,7 +87,20 @@ function generateDashboard() {
       visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
       currentCol += 2;
   }
-  const scRange = visualsSheet.getRange(4, 1, 1, 10);
+  
+  // 2. Build the last 2 static scorecards manually in their new positions
+  
+  // "In Person Mtgs" (Cols I-J)
+  visualsSheet.getRange(3, 9, 1, 2).merge().setValue("In Person Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 9, 1, 2).merge().setValue(inPerson).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+  // "SE Lead Mtgs" (Cols K-L)
+  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("SE Lead Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 11, 1, 2).merge().setValue(seLead).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+
+  // 3. Apply formatting rules to all static scorecards
+  const scRange = visualsSheet.getRange(4, 1, 1, 12); // A-L
   let scRules = [
       SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
@@ -135,9 +150,10 @@ function generateDashboard() {
   }
 
 // --- Dynamic "Total Time Spent" Scorecard ---
+  // Build this card in its new position (G-H)
   visualsSheet.getRange("M4").setFormula("=SUM(M7:M)"); // Hidden SUM cell
-  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("Total Time").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 11, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
   // Hidden Chart Source (now N, O)
   visualsSheet.getRange("N6").setValue("Chart Source (Hidden)").setFontStyle("italic");
