@@ -765,7 +765,7 @@ function _formatMinutesToHours(totalMinutes) {
  * 1. Rearranged scorecards to the user's preferred layout.
  * 2. "Total Time Spent" is now in G-H.
  * 3. "In Person Mtgs" is in I-J.
- * 4. "SE Lead Mtgs" is in K.
+ * 4. "SE Lead Mtgs" is in K-L.
  * 5. This is a layout-only change and does not affect any data logic.
  */
 function generateDashboard() {
