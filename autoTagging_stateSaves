@@ -3,6 +3,7 @@
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
  * CHANGELOG:WHY THE CHANGE (v2.7.8):
  * 1. implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
+ * 2. remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -93,7 +94,7 @@ function findEventsMissingTag() {
         const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
         const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-        // NEW: Nights Away Logic
+        // NEW: Nights Away Logic (v2.7.8)
         const nightsAwayKeywords = (getConfig("NightsAwayKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
         
@@ -715,6 +716,7 @@ function onEditTagsSheet(e) {
     }
   }
 }
+
 // =================================================================
 // #region 6. VISUALS DASHBOARD FUNCTIONS
 // =================================================================
@@ -901,7 +903,8 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 400).setOption('width', 500).setPosition(10, 13, 0, 0).build(); // Chart in N (Col 14) to avoid table
+      // Next Line Dictates PieChart Placement, setPosition is row 10; A (Col 1) with hard def on bounding box size 
+      .setOption('height', 600).setOption('width', 700).setPosition(10, 1, 0, 0).build(); 
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
 
@@ -910,14 +913,16 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(9, 120); // I (Count)
+  visualsSheet.setColumnWidth(8, 250); // H (Tag Name)
+  visualsSheet.setColumnWidth(9, 60); // I (Count)
   visualsSheet.setColumnWidth(10, 120); // J (Pct)
   visualsSheet.setColumnWidth(11, 120); // K (Time)
   visualsSheet.setColumnWidth(12, 50);  // L (Hide)
-  visualsSheet.autoResizeColumns(8, 1); // H (Tag Name)
+  // visualsSheet.autoResizeColumns(8, 1); // H (Tag Name)
+  // visualsSheet.autoResizeColumns(9, 1); // I (Count)
   
   // Resize single-column cards
-  [1, 2, 3, 5, 6, 7, 8].forEach(c => visualsSheet.setColumnWidth(c, 100));
+  [1, 2, 3, 5, 6, 7].forEach(c => visualsSheet.setColumnWidth(c, 100));
   
   ss.setActiveSheet(visualsSheet);
 }
