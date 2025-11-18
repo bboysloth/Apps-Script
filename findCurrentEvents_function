@@ -2,6 +2,9 @@
 // #region 3. CORE LOGIC FUNCTIONS
 // =================================================================
 
+// v2.7.8 (Build out of 'Nights' Function) 
+// Needs logic to have the event be 'All Day' AND include a keyword, controlled by the user
+
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
@@ -13,12 +16,16 @@ function findEventsMissingTag() {
         const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
         const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
         const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
         const modifier = getConfig("InPersonModifier");
         const seLeadTagText = getConfig("SELeadTagText");
+        const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
         const tagPrefix = "Verkada Meeting Tag: ";
+        const attendanceFilter = getConfig("AttendanceFilter");
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
@@ -82,6 +89,7 @@ function findEventsMissingTag() {
         
         // --- 4. Fetch Events ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
+        const userEmail = Session.getActiveUser().getEmail().toLowerCase();
         let allEvents = [], pageToken = null;
         do {
           const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 2500, pageToken: pageToken });
@@ -94,12 +102,13 @@ function findEventsMissingTag() {
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
         for (const event of events) {
-            if (event.start.date) continue;
+            // if (event.start.date) continue; // deletes any hotel stays, holidays, or all-day blocks from your list (v2.7.8)
+            if (event.eventType === 'outOfOffice') continue; // NEW: Skip "Out of Office" events
             if (!event.summary) continue;
             const title = event.summary;
             if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
-            // COMMENTED OUT TO SEE 'VCE Events' if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
+            // COMMENTED OUT TO SEE 'VCE Events' -- if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
 
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
@@ -107,6 +116,26 @@ function findEventsMissingTag() {
             const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
             if (externalFilter && isPurelyInternal) continue;
             if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
+
+            // --- NEW (v2.6.4): Filter by Attendance Status ---
+            if (attendanceFilter === "Show Only Accepted/Maybe") {
+                let myStatus = "none"; // Default if user is not on the invite
+
+                if (organizerEmail.toLowerCase() === userEmail) {
+                    myStatus = "organizer";
+                } else if (event.attendees) {
+                    const me = event.attendees.find(a => a.email.toLowerCase() === userEmail);
+                    if (me) {
+                        myStatus = me.responseStatus; // "accepted", "tentative", "declined", "needsAction"
+                    }
+                }
+                
+                // Keep the event ONLY if status is one of the "good" ones
+                if (!["accepted", "tentative", "organizer"].includes(myStatus)) {
+                    continue; // Skip this event
+                }
+            }
+            // --- End of new filter ---
             
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
@@ -134,9 +163,11 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-// --- New Auto-Tag Logic (v2.6.5 - Title Priority Fix) ---
-            const titleSearchText = title.toLowerCase();
+          // --- New Auto-Tag Logic (v2.6.6 - Title Priority Fix) ---
+            // Exclude URLS from creating a search match of keyword suggestion
+            const titleSearchText = title.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             let tagFound = false;
+            let descriptionSearchText = ""; // Define it here
 
             // Loop 1: Check Titles first for high priority
             for (const [keyword, rules] of keywordMap.entries()) {
@@ -150,7 +181,8 @@ function findEventsMissingTag() {
 
             // Loop 2: Check Descriptions only if no title match was found
             if (!tagFound) {
-                const descriptionSearchText = description.toLowerCase();
+                // Exclude URLS from creating a search match of keyword suggestion
+                descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
                 for (const [keyword, rules] of keywordMap.entries()) {
                     // Check if the description includes the keyword AND the rules have a valid, non-conflicted descriptionTag
                     if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
@@ -159,10 +191,50 @@ function findEventsMissingTag() {
                     }
                 }
             }
-            // --- End of new logic ---
+          // --- End of new logic ---
 
+          // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.6) ---
+          // We use the full text search here, as title/description priority is only for the tag itself.
+            if (tagFound) { // If we skipped Loop 2, we still need to define descriptionSearchText
+            // Exclude URLS from creating a search match of a keyword suggestion
+            descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
+            }
+            const fullSearchText = (titleSearchText + ' ' + descriptionSearchText);
+
+            // 1. Auto-suggest SE Lead (runs regardless of tag)
+            for (const keyword of autoSeLeadKeywords) {
+                if (fullSearchText.includes(keyword)) {
+                    suggestedSeLead = true;
+                    break; // Stop after first match
+                }
+            }
+            
+            // 2. Auto-suggest In Person (ONLY runs if a tag is present or suggested)
+            if (suggestedTag) {
+                for (const keyword of autoInPersonKeywords) {
+                    if (fullSearchText.includes(keyword)) {
+                        suggestedInPerson = true;
+                        break; // Stop after first match
+                    }
+                }
+            }
+          // --- End of new logic ---
+  // THIS SECTION BUILDS THE TIME DURATION LOGIC (reworked in v2.7.8)
+
+            // --- Logic for Duration (Minutes) vs Nights (Count) ---
             let durationInMinutes = 0;
-            if (event.end.dateTime && event.start.dateTime) {
+            let nightsCount = 0;
+
+            if (event.start.date) {
+                // All-Day Event: Check config, then calculate nights
+                if (!includeAllDayEvents) continue; 
+                
+                const start = new Date(event.start.date);
+                const end = new Date(event.end.date);
+                const diffTime = Math.abs(end - start);
+                nightsCount = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            } else if (event.end.dateTime && event.start.dateTime) {
+                // Timed Event: Calculate minutes
                 const eventStartTimeMs = new Date(event.start.dateTime).getTime();
                 const eventEndTimeMs = new Date(event.end.dateTime).getTime();
                 durationInMinutes = Math.round((eventEndTimeMs - eventStartTimeMs) / 60000);
@@ -178,9 +250,11 @@ function findEventsMissingTag() {
                 `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
                 '', 
                 originalSeLead, originalInPerson, originalTag,
-                durationInMinutes
+                durationInMinutes, // N: Duration (Hidden)
+                nightsCount        // O: Nights (Hidden) - NEW COLUMN
             ];
-            
+    // --- END NEW DURATION LOGIC SECTION ---
+
             if (showTaggedMeetings) {
                 if (hasMainTag) { fullyTaggedMeetings.push(rowData); } 
                 else { noTagMeetings.push(rowData); }
@@ -194,11 +268,11 @@ function findEventsMissingTag() {
         }
         
         // --- 6. Write Results ---
-        const sheet = file.getSheets()[0];
+        const sheet = file.getSheetByName("Untagged Meetings");
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
-        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)"];
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         
         const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
@@ -224,14 +298,14 @@ function findEventsMissingTag() {
 
 function updateMeetingTag(e, isSingleEditMode) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheets()[0];
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheetByName("Untagged Meetings");
   try {
     if (isSingleEditMode) {
       const range = e.range;
       if (range.getRow() <= 1) return;
       const editedCol = range.getColumn();
       const sheetName = sheet.getName();
-      if (sheetName !== ss.getSheets()[0].getName()) return;
+      if (sheetName !== "Untagged Meetings") return;
 
       if (editedCol === 5 || editedCol === 6) {
         if (e.value === "TRUE") range.setBackground('#d9ead3');
@@ -251,7 +325,7 @@ function updateMeetingTag(e, isSingleEditMode) {
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
     const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
 
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues(); // Read 14 columns
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 15).getValues(); // Read 15 columns (update v2.7.8)
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
@@ -326,7 +400,8 @@ function updateMeetingTag(e, isSingleEditMode) {
           }
           // --- END FIX ---
           
-          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id);
+          // --- FIX (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id, { sendUpdates: "none" });
           rowsToDelete.push(i + 2);
           updatedCount++;
         }
