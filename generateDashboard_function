@@ -1,3 +1,12 @@
+/**
+ * Generates the Visuals Dashboard. (High Density Layout).
+ * RESTORED (v2.7.8):
+ * 1. Reads 15 columns to capture "Nights" (Col O).
+ * 2. Calculates 'totalNights'.
+ * 3. Adds "Nights Away" scorecard in M-N.
+ * 4. Preserves "Total Time" in G-H and "SE Lead" in K-L.
+ */
+
 // =================================================================
 // #region 6. VISUALS DASHBOARD FUNCTIONS
 // =================================================================
@@ -21,14 +30,12 @@ function _formatMinutesToHours(totalMinutes) {
 }
 
 /**
- * Generates the Visuals Dashboard. (High Density Layout).
- * RESTORED (v2.7.8):
- * 1. Reads 15 columns to capture "Nights" (Col O).
- * 2. Calculates 'totalNights'.
- * 3. Adds "Nights Away" scorecard in M-N.
- * 4. Preserves "Total Time" in G-H and "SE Lead" in K-L.
+ * Generates the Visuals Dashboard.
+ * v2.7.9:
+ * 1. Restores "Gold-2" Layout (2-column scorecards at top).
+ * 2. Adds "Nights Away" scorecard to Row 27 (below chart).
+ * 3. Calculates Nights from Column O.
  */
-
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheetByName("Untagged Meetings");
@@ -46,7 +53,7 @@ function generateDashboard() {
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
   
-  // Read 15 columns (A-O)
+  // Read 15 columns (A-O) to include Nights
   const data = dataSheet.getRange(2, 1, lastRow - 1, 15).getValues();
   
   let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0, totalNights = 0;
@@ -74,46 +81,53 @@ function generateDashboard() {
   });
   let internal = total - external;
 
-  // --- Scorecard Section (High Density) ---
-  // Row 3: Headers, Row 4: Values
+  // --- TOP ROW SCORECARDS (Rows 3-4) ---
+  // Layout: 2 columns per card
   const bg = "#283e4d";
   const fg = "white";
 
-  // 1. Single Column Cards (A, B, C)
-  const singles = [
-    { title: "Total Mtgs", val: total, col: 1 },
-    { title: "External", val: external, col: 2 },
-    { title: "Internal", val: internal, col: 3 }
+  // 1. Static Cards (A-F)
+  const topCards = [
+    { title: "Total Meetings", val: total, col: 1 },
+    { title: "External Meetings", val: external, col: 3 },
+    { title: "Internal Meetings", val: internal, col: 5 }
   ];
   
-  singles.forEach(card => {
-    visualsSheet.getRange(3, card.col).setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-    visualsSheet.getRange(4, card.col).setValue(card.val).setFontSize(14).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  topCards.forEach(card => {
+    visualsSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    visualsSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
   });
 
-  // 2. Double Column Card (D-E) - Total Time
-  visualsSheet.getRange("O4").setFormula("=SUM(M7:M)"); // Hidden Sum Helper
-  visualsSheet.getRange(3, 4, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 4, 1, 2).merge().setFormula(`=TEXT(O4/1440, "[h]""hr ""mm""min""")`).setFontSize(14).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  // 2. Dynamic "Total Time Spent" (G-H)
+  // Use O4 as hidden sum helper (summing raw minutes from table)
+  visualsSheet.getRange("O4").setFormula("=SUM(M7:M)"); 
+  visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(O4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // 3. Single Column Cards (F, G, H)
-  const singles2 = [
-    { title: "In Person", val: inPerson, col: 6 },
-    { title: "SE Lead", val: seLead, col: 7 },
-    { title: "Nights", val: totalNights, col: 8 }
+  // 3. Remaining Static Cards (I-L)
+  const topCards2 = [
+    { title: "In Person Mtgs", val: inPerson, col: 9 },
+    { title: "SE Lead Mtgs", val: seLead, col: 11 }
   ];
 
-  singles2.forEach(card => {
-    visualsSheet.getRange(3, card.col).setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-    visualsSheet.getRange(4, card.col).setValue(card.val).setFontSize(14).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  topCards2.forEach(card => {
+    visualsSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    visualsSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
   });
 
-  // 4. Formatting Rules
-  const scRange = visualsSheet.getRange(4, 1, 1, 8); // A-H
+  // --- BOTTOM ROW SCORECARDS (Rows 27-28) ---
+  // 4. Nights Away (A-B, below chart)
+  visualsSheet.getRange(27, 1, 1, 2).merge().setValue("Nights Away").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(28, 1, 1, 2).merge().setValue(totalNights).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+
+  // --- Formatting Rules ---
+  // Apply to Top Row (4) and Bottom Row (28)
+  const scRanges = [visualsSheet.getRange(4, 1, 1, 12), visualsSheet.getRange(28, 1, 1, 2)];
   let scRules = [
-      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges(scRanges).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges(scRanges).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges(scRanges).build()
   ];
   visualsSheet.setConditionalFormatRules(scRules);
 
@@ -131,10 +145,11 @@ function generateDashboard() {
         return [tag, count, _formatMinutesToHours(timeInMinutes)];
     });
     
+    // Write Tag Name (H), Count (I), Formatted Time (K)
     visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); 
     visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); 
     
-    // Raw Minutes in Hidden Col M
+    // Write Raw Minutes to Hidden Col M
     visualsSheet.getRange(7, 13, tableData.length, 1).setValues(tableData.map(row => [tagTime.get(row[0]) || 0])); 
     
     visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
@@ -156,12 +171,12 @@ function generateDashboard() {
   }
 
   // Chart Source (N, O)
-  visualsSheet.getRange("O6").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("O7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  visualsSheet.getRange("N6").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("N7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
   visualsSheet.hideColumns(13, 4); // Hide M, N, O, P
 
   if (sortedTags.length > 0) {
-    const chartRange = visualsSheet.getRange("O7:P" + (7 + sortedTags.length));
+    const chartRange = visualsSheet.getRange("N7:O" + (7 + sortedTags.length));
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
@@ -180,15 +195,6 @@ function generateDashboard() {
 
   visualsSheet.setColumnWidth(10, 120); 
   visualsSheet.setColumnWidth(11, 120); 
-  // Resize single-column cards so text fits
-  visualsSheet.setColumnWidth(1, 100);
-  visualsSheet.setColumnWidth(2, 100);
-  visualsSheet.setColumnWidth(3, 100);
-  visualsSheet.setColumnWidth(6, 100);
-  visualsSheet.setColumnWidth(7, 100);
-  visualsSheet.setColumnWidth(8, 100);
-  
+  visualsSheet.autoResizeColumns(7, 3); 
   ss.setActiveSheet(visualsSheet);
 }
-
-// end region
