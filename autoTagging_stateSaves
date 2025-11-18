@@ -1,8 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.7.7
+ * @file Meeting Tagger Tool v2.7.9
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.7.7):
- * 1. Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
+ * CHANGELOG:WHY THE CHANGE (v2.7.8):
+ * 1. implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -14,8 +14,9 @@
  * --------- removed references to 'getSheets()[0] and replaced them with more resilient 'getSheetByName("Untagged Meetings")'
  * Previous (v2.7.6): Stability Release
  * --------- updated documentation
+ * Previous (v2.7.7): Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
  * 
- * @version 2.7.7
+ * @version 2.7.9
  */
 
 // =================================================================
@@ -92,6 +93,10 @@ function findEventsMissingTag() {
         const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
         const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        // NEW: Nights Away Logic
+        const nightsAwayKeywords = (getConfig("NightsAwayKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
+        
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
         const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
@@ -102,18 +107,14 @@ function findEventsMissingTag() {
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
-        // Read new columns F ("Titles") and G ("Descriptions")
         const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
         const tagColorRange = tagsSheet.getRange("C2:C" + tagsSheet.getLastRow());
         const tagBackgrounds = tagColorRange.getBackgrounds();
         
-        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); // Abbr -> FullName
+        const tagMap = new Map(tagsData.map(row => [row[2].trim().replace(";", ""), row[1]])); 
         
-// This map now stores an object with the rules: Map<Keyword, {titleTag, descriptionTag}>
         const keywordMap = new Map();
         tagsData.forEach(row => {
-            // row[1] = FullName (Col C), row[3] = Keywords (Col E)
-            // row[4] = Search Titles (Col F), row[5] = Search Descriptions (Col G)
             const fullName = row[1];
             const keywords = row[3];
             const searchTitles = row[4] === true;
@@ -121,27 +122,14 @@ function findEventsMissingTag() {
 
             if (fullName && keywords && (searchTitles || searchDescriptions)) {
                 keywords.split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                    // Get the existing entry for this keyword, or create a new one
                     const entry = keywordMap.get(k) || { titleTag: null, descriptionTag: null };
-
                     if (searchTitles) {
-                        if (!entry.titleTag) {
-                            // 1. This is the first tag to claim this keyword in a Title.
-                            entry.titleTag = fullName;
-                        } else if (entry.titleTag !== fullName) {
-                            // 2. Conflict: A different tag already claimed this keyword in a Title.
-                            entry.titleTag = "CONFLICT";
-                        }
+                        if (!entry.titleTag) entry.titleTag = fullName;
+                        else if (entry.titleTag !== fullName) entry.titleTag = "CONFLICT";
                     }
-                    
                     if (searchDescriptions) {
-                        if (!entry.descriptionTag) {
-                            // 3. This is the first tag to claim this keyword in a Description.
-                            entry.descriptionTag = fullName;
-                        } else if (entry.descriptionTag !== fullName) {
-                            // 4. Conflict: A different tag already claimed this keyword in a Description.
-                            entry.descriptionTag = "CONFLICT";
-                        }
+                        if (!entry.descriptionTag) entry.descriptionTag = fullName;
+                        else if (entry.descriptionTag !== fullName) entry.descriptionTag = "CONFLICT";
                     }
                     keywordMap.set(k, entry);
                 });
@@ -175,14 +163,40 @@ function findEventsMissingTag() {
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
         for (const event of events) {
-            if (event.start.date) continue;
-            if (event.eventType === 'outOfOffice') continue; // NEW: Skip "Out of Office" events
+            // --- NEW LOGIC: Handle All-Day vs Timed ---
+            let durationInMinutes = 0;
+            let nightsCount = 0;
+
+            if (event.start.date) {
+                // All-Day Event
+                if (!includeAllDayEvents) continue; // Skip if config is FALSE
+                
+                // Filter: Only count as Night if (1) You Created It AND (2) It matches a keyword
+                const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
+                const allDaySearchText = (event.summary + ' ' + (event.description || "")).toLowerCase();
+                const hasNightsKeyword = nightsAwayKeywords.some(k => allDaySearchText.includes(k));
+
+                if (isMyEvent && hasNightsKeyword) {
+                    const s = new Date(event.start.date);
+                    const e = new Date(event.end.date);
+                    const diff = Math.abs(e - s);
+                    nightsCount = Math.ceil(diff / (1000 * 60 * 60 * 24));
+                }
+                // Note: Duration remains 0 for all-day events to protect metrics
+            } else {
+                // Timed Event
+                if (event.eventType === 'outOfOffice') continue; 
+                const s = new Date(event.start.dateTime).getTime();
+                const e = new Date(event.end.dateTime).getTime();
+                durationInMinutes = Math.round((e - s) / 60000);
+            }
+            // --- End New Logic ---
+
             if (!event.summary) continue;
             const title = event.summary;
             if (ignoreExact.includes(title) || ignorePhrases.some(p => title.includes(p))) continue;
+            
             const organizerEmail = event.organizer ? event.organizer.email : (event.creator ? event.creator.email : '');
-            // COMMENTED OUT TO SEE 'VCE Events' -- if (organizerEmail.toLowerCase().endsWith('@group.calendar.google.com')) continue;
-
             const attendees = (event.attendees || []).map(a => a.email).filter(Boolean);
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
             const isInternalEntity = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com") || email.toLowerCase().endsWith("@group.calendar.google.com"));
@@ -190,25 +204,17 @@ function findEventsMissingTag() {
             if (externalFilter && isPurelyInternal) continue;
             if (ignoreFromEmails.includes(organizerEmail) || attendees.some(a => ignoreToEmails.includes(a))) continue;
 
-            // --- NEW (v2.6.4): Filter by Attendance Status ---
+            // Attendance Filter
             if (attendanceFilter === "Show Only Accepted/Maybe") {
-                let myStatus = "none"; // Default if user is not on the invite
-
+                let myStatus = "none"; 
                 if (organizerEmail.toLowerCase() === userEmail) {
                     myStatus = "organizer";
                 } else if (event.attendees) {
                     const me = event.attendees.find(a => a.email.toLowerCase() === userEmail);
-                    if (me) {
-                        myStatus = me.responseStatus; // "accepted", "tentative", "declined", "needsAction"
-                    }
+                    if (me) myStatus = me.responseStatus;
                 }
-                
-                // Keep the event ONLY if status is one of the "good" ones
-                if (!["accepted", "tentative", "organizer"].includes(myStatus)) {
-                    continue; // Skip this event
-                }
+                if (!["accepted", "tentative", "organizer"].includes(myStatus)) continue; 
             }
-            // --- End of new filter ---
             
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
@@ -236,73 +242,55 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-          // --- New Auto-Tag Logic (v2.6.6 - Title Priority Fix) ---
-            // Exclude URLS from creating a search match of keyword suggestion
+            // Auto-Tag Logic (Title Priority)
             const titleSearchText = title.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             let tagFound = false;
-            let descriptionSearchText = ""; // Define it here
+            let descriptionSearchText = ""; 
 
-            // Loop 1: Check Titles first for high priority
+            // Loop 1: Titles
             for (const [keyword, rules] of keywordMap.entries()) {
-                // Check if the title includes the keyword AND the rules have a valid, non-conflicted titleTag
                 if (rules.titleTag && rules.titleTag !== "CONFLICT" && titleSearchText.includes(keyword)) {
                     suggestedTag = rules.titleTag;
                     tagFound = true;
-                    break; // Found our high-priority match, stop all searching
+                    break; 
                 }
             }
-
-            // Loop 2: Check Descriptions only if no title match was found
+            // Loop 2: Descriptions
             if (!tagFound) {
-                // Exclude URLS from creating a search match of keyword suggestion
                 descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
                 for (const [keyword, rules] of keywordMap.entries()) {
-                    // Check if the description includes the keyword AND the rules have a valid, non-conflicted descriptionTag
                     if (rules.descriptionTag && rules.descriptionTag !== "CONFLICT" && descriptionSearchText.includes(keyword)) {
                         suggestedTag = rules.descriptionTag;
-                        break; // Stop after the first description match
+                        break;
                     }
                 }
             }
-          // --- End of new logic ---
 
-          // --- New Auto-SE-Lead & Auto-In-Person Logic (v2.6.6) ---
-          // We use the full text search here, as title/description priority is only for the tag itself.
-            if (tagFound) { // If we skipped Loop 2, we still need to define descriptionSearchText
-            // Exclude URLS from creating a search match of a keyword suggestion
-            descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
+            // Auto-SE-Lead & Auto-In-Person
+            if (tagFound) { 
+                descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             }
             const fullSearchText = (titleSearchText + ' ' + descriptionSearchText);
 
-            // 1. Auto-suggest SE Lead (runs regardless of tag)
             for (const keyword of autoSeLeadKeywords) {
                 if (fullSearchText.includes(keyword)) {
                     suggestedSeLead = true;
-                    break; // Stop after first match
+                    break; 
                 }
             }
-            
-            // 2. Auto-suggest In Person (ONLY runs if a tag is present or suggested)
             if (suggestedTag) {
                 for (const keyword of autoInPersonKeywords) {
                     if (fullSearchText.includes(keyword)) {
                         suggestedInPerson = true;
-                        break; // Stop after first match
+                        break; 
                     }
                 }
             }
-          // --- End of new logic ---
 
-            let durationInMinutes = 0;
-            if (event.end.dateTime && event.start.dateTime) {
-                const eventStartTimeMs = new Date(event.start.dateTime).getTime();
-                const eventEndTimeMs = new Date(event.end.dateTime).getTime();
-                durationInMinutes = Math.round((eventEndTimeMs - eventStartTimeMs) / 60000);
-            }
-            
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
             const hasExternalAttendee = !isPurelyInternal;
             
+            // Updated Row Data (15 Columns)
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
                 suggestedSeLead, suggestedInPerson, suggestedTag, 
@@ -310,7 +298,8 @@ function findEventsMissingTag() {
                 `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
                 '', 
                 originalSeLead, originalInPerson, originalTag,
-                durationInMinutes
+                durationInMinutes, 
+                nightsCount // NEW: Col O
             ];
             
             if (showTaggedMeetings) {
@@ -330,7 +319,8 @@ function findEventsMissingTag() {
         if (sheet.getLastRow() > 0) {
              sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
         }
-        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)"];
+        // Added "Nights" to headers
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         
         const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
@@ -348,8 +338,7 @@ function findEventsMissingTag() {
         // --- 7. Formatting ---
         _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
         
-        // --- Force re-application of colors on every refresh ---
-        updateTagDropdownsAndColors(true); // Pass 'true' to run in silent mode
+        updateTagDropdownsAndColors(true); 
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
@@ -381,9 +370,10 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     const tagsSheet = ss.getSheetByName("Tags");
     const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
-    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); // FullName -> Abbreviation
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); 
 
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 14).getValues(); // Read 14 columns
+    // UPDATED: Read 15 columns
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 15).getValues(); 
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
@@ -417,7 +407,6 @@ function updateMeetingTag(e, isSingleEditMode) {
 
       const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
-      // --- FIX (v2.6.3): Allow save if 'hasChanged' is true, even if tag is blank ---
       if (hasChanged) {
         const title = rowData[0];
         const startTime = new Date(rowData[1]).getTime();
@@ -427,27 +416,21 @@ function updateMeetingTag(e, isSingleEditMode) {
         if (eventToUpdate) {
           let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
           
-          // 1. Always remove old tags and SE lead text
           const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
           description = description.replace(seLeadRegex, '').trim();
           const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
           description = description.replace(aggressiveRemovalRegex, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
-          // 2. Add new SE Lead text if checked
-          if (currentSeLead) {
-            description += "\n" + seLeadTag;
-          }
+          if (currentSeLead) description += "\n" + seLeadTag;
           
-          // 3. ONLY add a tag if one is selected
-          if (currentTag && currentTag.trim() !== "") {
+          if (currentTag && currentTag.trim() !== "" && currentTag !== "<Clear Tag>") {
             let abbreviatedTag = tagMap.get(currentTag); 
             if (!abbreviatedTag) { 
               SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet. Skipping row.`); 
               continue; 
             }
             
-            // 4. Only add "In Person" modifier if a tag is ALSO present
             if (currentInPerson && abbreviatedTag) {
               let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
               if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
@@ -456,9 +439,7 @@ function updateMeetingTag(e, isSingleEditMode) {
             }
             description += "\n\n" + tagPrefix + abbreviatedTag;
           }
-          // --- END FIX ---
           
-          // --- FIX (v2.7.4): Added {sendUpdates: "none"} to stop email notifications ---
           Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id, { sendUpdates: "none" });
           rowsToDelete.push(i + 2);
           updatedCount++;
@@ -521,7 +502,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     sheet.getRange("J1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
     sheet.setColumnWidth(3, 230);
     sheet.setColumnWidth(10, 300);
-    sheet.hideColumns(11, 4); // Hide K, L, M, N
+    sheet.hideColumns(11, 5); // NEW: Hide K, L, M, N, O
     
     if (configs.showTaggedMeetings) {
         if (noTagMeetings.length > 0) {
@@ -740,9 +721,7 @@ function onEditTagsSheet(e) {
 // =================================================================
 
 /**
- * NEW (v2.6.2): Helper function to format minutes into a "Xhr Ymin" string.
- * @param {number} totalMinutes The total minutes to format.
- * @returns {string} A human-readable time string.
+ * Helper function to format minutes into a "Xhr Ymin" string.
  */
 function _formatMinutesToHours(totalMinutes) {
   if (totalMinutes === 0) return "0min";
@@ -760,13 +739,17 @@ function _formatMinutesToHours(totalMinutes) {
 }
 
 /**
+ * Generates the Visuals Dashboard. (High Density Layout).
+ * RESTORED (v2.7.8):
+ * 1. Reads 15 columns to capture "Nights" (Col O).
+ * 2. Calculates 'totalNights'.
+ * 3. Adds "Nights Away" scorecard in M-N.
+ * 4. Preserves "Total Time" in G-H and "SE Lead" in K-L.
+ */
+
+/**
  * Generates the Visuals Dashboard.
- * WHY THE CHANGE (v2.7.7):
- * 1. Rearranged scorecards to the user's preferred layout.
- * 2. "Total Time Spent" is now in G-H.
- * 3. "In Person Mtgs" is in I-J.
- * 4. "SE Lead Mtgs" is in K-L.
- * 5. This is a layout-only change and does not affect any data logic.
+ * v2.7.9: Adds "Nights Away" Scorecard and logic.
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -784,10 +767,11 @@ function generateDashboard() {
   
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
-  // Read all 14 columns (A-N)
-  const data = dataSheet.getRange(2, 1, lastRow - 1, 14).getValues();
   
-  let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0;
+  // Read 15 columns (A-O) to include Nights
+  const data = dataSheet.getRange(2, 1, lastRow - 1, 15).getValues();
+  
+  let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0, totalNights = 0;
   const tagCounts = new Map();
   const tagTime = new Map(); 
 
@@ -798,10 +782,10 @@ function generateDashboard() {
     
     const tagName = row[6];
     const duration = row[13];
+    const nights = row[14]; // Col O
     
-    if (typeof duration === 'number') {
-        totalMinutes += duration;
-    }
+    if (typeof duration === 'number') totalMinutes += duration;
+    if (typeof nights === 'number') totalNights += nights;
     
     if (tagName && tagName.trim() !== "") { 
         tagCounts.set(tagName, (tagCounts.get(tagName) || 0) + 1);
@@ -812,93 +796,91 @@ function generateDashboard() {
   });
   let internal = total - external;
 
-  // --- Scorecard Section (Rows 3-4) ---
+  // --- Scorecards ---
+  const bg = "#283e4d";
+  const fg = "white";
+
+  // A-F: Static
+  const singles = [
+    { title: "Total Meetings", val: total, col: 1 },
+    { title: "External Meetings", val: external, col: 3 },
+    { title: "Internal Meetings", val: internal, col: 5 }
+  ];
   
-  // 1. Build the first 3 static scorecards (A-F)
-  const scorecardTitles = ["Total Meetings", "External Meetings", "Internal Meetings"];
-  const scorecardValues = [total, external, internal];
-  
-  let currentCol = 1;
-  for (let i = 0; i < scorecardTitles.length; i++) {
-      visualsSheet.getRange(3, currentCol, 1, 2).merge().setValue(scorecardTitles[i]).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
-      visualsSheet.getRange(4, currentCol, 1, 2).merge().setValue(scorecardValues[i]).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-      currentCol += 2;
-  }
-  
-  // 2. Build the last 2 static scorecards manually in their new positions
-  
-  // "In Person Mtgs" (Cols I-J)
-  visualsSheet.getRange(3, 9, 1, 2).merge().setValue("In Person Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  singles.forEach(card => {
+    visualsSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    visualsSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  });
+
+  // G-H: Total Time (Dynamic)
+  visualsSheet.getRange("O4").setFormula("=SUM(M7:M)");
+  visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(O4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+  // I-J: In Person
+  visualsSheet.getRange(3, 9, 1, 2).merge().setValue("In Person Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 9, 1, 2).merge().setValue(inPerson).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // "SE Lead Mtgs" (Cols K-L)
-  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("SE Lead Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
+  // K-L: SE Lead
+  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("SE Lead Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 11, 1, 2).merge().setValue(seLead).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
+  // M-N: Nights Away (New)
+  visualsSheet.getRange(3, 13, 1, 2).merge().setValue("Nights Away").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+  visualsSheet.getRange(4, 13, 1, 2).merge().setValue(totalNights).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // 3. Apply formatting rules to all static scorecards
-  const scRange = visualsSheet.getRange(4, 1, 1, 12); // A-L
+  // Formatting
+  const scRange = visualsSheet.getRange(4, 1, 1, 14); 
   let scRules = [
       SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
   ];
-  visualsSheet.setConditionalFormatRules(scRules); // Set scorecard rules
+  visualsSheet.setConditionalFormatRules(scRules);
 
   // --- Interactive Tag Table (Starts at G6) ---
-  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
-  visualsSheet.getRange("K6").setValue("Time Per Tag").setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("K6").setValue("Total Time").setFontWeight("bold").setBackground(bg).setFontColor(fg);
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
     const tableData = sortedTags.map(([tag, count]) => {
         const timeInMinutes = tagTime.get(tag) || 0;
-        // [Tag Name, Count, Formatted Time, Raw Minutes]
-        return [tag, count, _formatMinutesToHours(timeInMinutes), timeInMinutes];
+        return [tag, count, _formatMinutesToHours(timeInMinutes)];
     });
     
-    // Write Tag Name (H), Count (I), and Formatted Time (K)
-    visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); // H, I
-    visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); // K
+    visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); 
+    visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); 
+    visualsSheet.getRange(7, 13, tableData.length, 1).setValues(tableData.map(row => [tagTime.get(row[0]) || 0])); 
     
-    // Write hidden raw minutes to Col L
-    visualsSheet.getRange(7, 12, tableData.length, 1).setValues(tableData.map(row => [row[3]])); 
-    
-    // Insert Checkboxes
     visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
     visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
     
     const numRows = sortedTags.length;
     const formulas = [];
-    const timeFormulas = [];
     
-    // Dynamic Formulas
     for (let i = 7; i < 7 + numRows; i++) {
-        formulas.push([`=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`]); // Percentage (Col J)
-        timeFormulas.push([`=IF(G${i}=TRUE, 0, L${i})`]); // Hidden Time Sum (Col M)
+        formulas.push([
+            `=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`, // J
+            `=IF(G${i}=TRUE, "-", TEXT(M${i}/1440, "[h]""hr ""mm""min"""))` // K
+        ]);
     }
-    visualsSheet.getRange(7, 10, numRows, 1).setFormulas(formulas).setNumberFormat("0.0%"); // Percentage in Col J
-    visualsSheet.getRange(7, 13, numRows, 1).setFormulas(timeFormulas); // Hidden sum data in Col M
+    visualsSheet.getRange(7, 10, numRows, 2).setFormulas(formulas);
+    visualsSheet.getRange(7, 10, numRows, 1).setNumberFormat("0.0%"); 
     
     visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
   }
 
-// --- Dynamic "Total Time Spent" Scorecard ---
-  // Build this card in its new position (G-H)
-  visualsSheet.getRange("M4").setFormula("=SUM(M7:M)"); // Hidden SUM cell
-  visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent In Meetings").setFontWeight("bold").setHorizontalAlignment("center").setBackground("#283e4d").setFontColor("white").setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(M4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-
-  // Hidden Chart Source (now N, O)
-  visualsSheet.getRange("N6").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("N7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
-  visualsSheet.hideColumns(12, 4); // Hide L, M, N, O
+  // Chart Source (O, P)
+  visualsSheet.getRange("O6").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("O7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  visualsSheet.hideColumns(13, 4); // Hide M, N, O, P
 
   if (sortedTags.length > 0) {
-    const chartRange = visualsSheet.getRange("N7:O" + (7 + sortedTags.length));
+    const chartRange = visualsSheet.getRange("O7:P" + (7 + sortedTags.length));
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
@@ -915,10 +897,10 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(10, 120); // Col J (Percentage)
-  visualsSheet.setColumnWidth(11, 120); // Col K (Total Time)
-  visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I
+  visualsSheet.setColumnWidth(10, 120); 
+  visualsSheet.setColumnWidth(11, 120); 
+  visualsSheet.autoResizeColumns(7, 3); 
   ss.setActiveSheet(visualsSheet);
 }
 
-// #endregion
+// end region
