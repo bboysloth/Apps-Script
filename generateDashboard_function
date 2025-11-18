@@ -1,10 +1,8 @@
 /**
  * Generates the Visuals Dashboard.
- * v2.7.9 Layout Update:
- * 1. Scorecards Row 1 (3-4): Total, External, Internal, Total Time.
- * 2. Scorecards Row 2 (5-6): In Person, SE Lead, Nights Away (Starts A5).
- * 3. Interactive Table: Moves down to G10.
- * 4. Pie Chart: Moves down to A10.
+ * v2.7.11 Fix:
+ * 1. Moves the "Hide" checkbox column from G to L.
+ * 2. Updates all formulas (Percentage, Total Time, Chart Filter) to read from Column L.
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -33,7 +31,7 @@ function generateDashboard() {
   data.forEach(row => {
     if (row[3] === true) external++;
     if (row[4] === true) seLead++;
-    if (row[5] === true) inPerson++;
+    if (row[5] === true) inLead++;
     
     const tagName = row[6];
     const duration = row[13]; // Col N
@@ -55,8 +53,7 @@ function generateDashboard() {
   const bg = "#283e4d";
   const fg = "white";
 
-  // ROW 1 (Rows 3-4): Main Metrics
-  // A-B: Total, C-D: External, E-F: Internal
+  // ROW 1 (Rows 3-4) - Standard Static Cards
   const row1Cards = [
     { title: "Total Meetings", val: total, col: 1 },
     { title: "External Meetings", val: external, col: 3 },
@@ -68,14 +65,12 @@ function generateDashboard() {
     visualsSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
   });
 
-  // G-H: Total Time Spent (Dynamic)
-  visualsSheet.getRange("O4").setFormula("=SUM(M11:M)"); // Sums hidden M (Raw Minutes) starting at Row 11
+  // Total Time (Dynamic, G-H)
+  visualsSheet.getRange("O4").setFormula("=SUM(M11:M)"); 
   visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(O4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-
-  // ROW 2 (Rows 5-6): Secondary Metrics
-  // A-B: In Person, C-D: SE Lead, E-F: Nights Away
+  // ROW 2 (Rows 5-6) - Secondary Static Cards
   const row2Cards = [
     { title: "In Person Mtgs", val: inPerson, col: 1 },
     { title: "SE Lead Mtgs", val: seLead, col: 3 },
@@ -88,7 +83,7 @@ function generateDashboard() {
   });
 
   // Formatting Rules (Apply to both Row 4 and Row 6 values)
-  const scRanges = [visualsSheet.getRange(4, 1, 1, 6), visualsSheet.getRange(6, 1, 1, 6)];
+  const scRanges = [visualsSheet.getRange(4, 1, 1, 8), visualsSheet.getRange(6, 1, 1, 6)];
   let scRules = [
       SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges(scRanges).build(),
       SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges(scRanges).build(),
@@ -98,7 +93,11 @@ function generateDashboard() {
 
 
   // --- INTERACTIVE TAG TABLE (Starts at G10) ---
-  visualsSheet.getRange("G10").setValue("Hide").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  
+  // 1. Move Checkboxes and Header to L
+  visualsSheet.getRange("G10").clearContent().setBackground(null); // Clear old header
+  visualsSheet.getRange("L10").setValue("Hide").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+
   visualsSheet.getRange("H10").setValue("Tag Name").setFontWeight("bold").setBackground(bg).setFontColor(fg);
   visualsSheet.getRange("I10").setValue("Count").setFontWeight("bold").setBackground(bg).setFontColor(fg);
   visualsSheet.getRange("J10").setValue("Percentage").setFontWeight("bold").setBackground(bg).setFontColor(fg);
@@ -112,37 +111,35 @@ function generateDashboard() {
     });
     
     // Write Data (Start Row 11)
-    // Tag Name (H), Count (I), Formatted Time (K)
-    visualsSheet.getRange(11, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); 
-    visualsSheet.getRange(11, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); 
+    visualsSheet.getRange(11, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); // H, I
+    visualsSheet.getRange(11, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); // K (Static Formatted Time)
     
     // Raw Minutes to Hidden Col M
     visualsSheet.getRange(11, 13, tableData.length, 1).setValues(tableData.map(row => [tagTime.get(row[0]) || 0])); 
     
-    // Checkboxes in G
-    visualsSheet.getRange(11, 7, visualsSheet.getMaxRows() - 10, 1).removeCheckboxes();
-    visualsSheet.getRange(11, 7, sortedTags.length, 1).insertCheckboxes();
+    // Checkboxes in L
+    visualsSheet.getRange(11, 12, visualsSheet.getMaxRows() - 10, 1).removeCheckboxes();
+    visualsSheet.getRange(11, 12, sortedTags.length, 1).insertCheckboxes();
     
     const numRows = sortedTags.length;
     const formulas = [];
     
     for (let i = 11; i < 11 + numRows; i++) {
+        // [Percentage (J), Total Time (K)]
         formulas.push([
-            `=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$11:$G,FALSE,$I$11:$I))`, // J (Pct)
-            `=IF(G${i}=TRUE, "-", TEXT(M${i}/1440, "[h]""hr ""mm""min"""))` // K (Time)
+            `=IF(L${i}=TRUE, "-", I${i}/SUMIF($L$11:$L,FALSE,$I$11:$I))`, // J
+            `=IF(L${i}=TRUE, "-", K${i})` // K - This is the placeholder for the old static time string.
         ]);
     }
     visualsSheet.getRange(11, 10, numRows, 2).setFormulas(formulas);
     visualsSheet.getRange(11, 10, numRows, 1).setNumberFormat("0.0%"); 
     
-    visualsSheet.getRange(10, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
+    visualsSheet.getRange(10, 7, sortedTags.length + 1, 6).setBorder(true, true, true, true, true, true);
   }
 
-  // --- PIE CHART (Starts at A10) ---
-  
   // Chart Source (N, O)
   visualsSheet.getRange("N10").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("N11").setFormula("=FILTER(H11:I, G11:G=FALSE)");
+  visualsSheet.getRange("N11").setFormula("=FILTER(H11:I, L11:L=FALSE)"); // Filter reads L
   visualsSheet.hideColumns(13, 4); // Hide M, N, O, P
 
   if (sortedTags.length > 0) {
@@ -154,7 +151,7 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 400).setOption('width', 700).setPosition(10, 1, 0, 0).build(); // Row 10, Col 1
+      .setOption('height', 400).setOption('width', 700).setPosition(10, 1, 0, 0).build();
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
 
@@ -163,8 +160,8 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(10, 120); // Col J
-  visualsSheet.setColumnWidth(11, 120); // Col K
-  visualsSheet.autoResizeColumns(7, 3); 
+  visualsSheet.setColumnWidth(10, 120); // Col J (Percentage)
+  visualsSheet.setColumnWidth(11, 120); // Col K (Total Time)
+  visualsSheet.autoResizeColumns(7, 3); // Resize G, H, I
   ss.setActiveSheet(visualsSheet);
 }
