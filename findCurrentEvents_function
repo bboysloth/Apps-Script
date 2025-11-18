@@ -1,11 +1,3 @@
-// =================================================================
-// #region 3. CORE LOGIC FUNCTIONS
-// =================================================================
-
-// v2.7.8 (Build out of 'Nights' Function) 
-// Needs logic to have the event be 'All Day' AND include a keyword, controlled by the user
-// Step 1 in creation of this logic -- code went from 400+ to 200+ lines of code
-
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
@@ -268,4 +260,122 @@ function findEventsMissingTag() {
         
     } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
 }
-// #endregion
+
+function updateMeetingTag(e, isSingleEditMode) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = isSingleEditMode ? e.range.getSheet() : ss.getSheetByName("Untagged Meetings");
+  try {
+    if (isSingleEditMode) {
+      const range = e.range;
+      if (range.getRow() <= 1) return;
+      const editedCol = range.getColumn();
+      const sheetName = sheet.getName();
+      if (sheetName !== "Untagged Meetings") return;
+
+      if (editedCol === 5 || editedCol === 6) {
+        if (e.value === "TRUE") range.setBackground('#d9ead3');
+        else range.setBackground('#ffffff');
+      }
+      return; 
+    }
+
+    ss.toast("Processing batch... Please wait.");
+    const tagPrefix = "Verkada Meeting Tag: ";
+    const seLeadTag = getConfig("SELeadTagText");
+    const modifier = getConfig("InPersonModifier");
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) { ss.toast("No data to process."); return; }
+    
+    const tagsSheet = ss.getSheetByName("Tags");
+    const tagsData = tagsSheet.getRange("C2:D" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(tagsData.map(row => [row[0], row[1]])); 
+
+    // UPDATED: Read 15 columns
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 15).getValues(); 
+    const calendarId = CalendarApp.getDefaultCalendar().getId();
+    
+    const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
+    if (eventTimes.length === 0) { ss.toast("No valid dates found to process."); return; }
+    const minTime = new Date(Math.min(...eventTimes));
+    const maxTime = new Date(Math.max(...eventTimes));
+    maxTime.setHours(23, 59, 59);
+
+    let allEventsForMap = [];
+    let pageToken = null;
+    do {
+      const response = Calendar.Events.list(calendarId, { timeMin: minTime.toISOString(), timeMax: maxTime.toISOString(), singleEvents: true, maxResults: 2500, pageToken: pageToken });
+      if (response.items) allEventsForMap = allEventsForMap.concat(response.items);
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    const eventMap = new Map();
+    allEventsForMap.forEach(event => eventMap.set(`${event.summary}_${new Date(event.start.dateTime || event.start.date).getTime()}`, event));
+
+    const rowsToDelete = [];
+    let updatedCount = 0;
+    
+    for (let i = 0; i < sheetData.length; i++) {
+      const rowData = sheetData[i];
+      const currentSeLead = rowData[4];
+      const currentInPerson = rowData[5];
+      const currentTag = rowData[6];
+      const originalSeLead = rowData[10];
+      const originalInPerson = rowData[11];
+      const originalTag = rowData[12];
+
+      const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
+
+      if (hasChanged) {
+        const title = rowData[0];
+        const startTime = new Date(rowData[1]).getTime();
+        const lookupKey = `${title}_${startTime}`;
+        const eventToUpdate = eventMap.get(lookupKey);
+
+        if (eventToUpdate) {
+          let description = (eventToUpdate.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>|<\/p>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+          
+          const seLeadRegex = new RegExp(`\\s*` + seLeadTag.trim() + `\\s*`, 'gi');
+          description = description.replace(seLeadRegex, '').trim();
+          const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
+          description = description.replace(aggressiveRemovalRegex, '');
+          description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
+
+          if (currentSeLead) description += "\n" + seLeadTag;
+          
+          if (currentTag && currentTag.trim() !== "" && currentTag !== "<Clear Tag>") {
+            let abbreviatedTag = tagMap.get(currentTag); 
+            if (!abbreviatedTag) { 
+              SpreadsheetApp.getUi().alert(`Error: Tag "${currentTag}" not found in "Tags" sheet. Skipping row.`); 
+              continue; 
+            }
+            
+            if (currentInPerson && abbreviatedTag) {
+              let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
+              if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
+              let coreTag = abbreviatedTag.replace(';', '').trim();
+              abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+            }
+            description += "\n\n" + tagPrefix + abbreviatedTag;
+          }
+          
+          Calendar.Events.patch({ description: description.trim() }, calendarId, eventToUpdate.id, { sendUpdates: "none" });
+          rowsToDelete.push(i + 2);
+          updatedCount++;
+        }
+      }
+    }
+
+    if (updatedCount > 0) {
+      const numDataRows = lastRow - 1;
+      if (updatedCount === numDataRows && rowsToDelete.length === numDataRows) {
+        sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).clearContent();
+      } else {
+        rowsToDelete.sort((a, b) => b - a).forEach(rowNum => sheet.deleteRow(rowNum));
+      }
+      ss.toast(`${updatedCount} meeting(s) were successfully updated.`);
+    } else {
+      ss.toast("No changes were detected to apply.");
+    }
+
+  } catch (err) { SpreadsheetApp.getUi().alert(err.message); }
+}
