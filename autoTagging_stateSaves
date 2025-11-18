@@ -715,7 +715,6 @@ function onEditTagsSheet(e) {
     }
   }
 }
-
 // =================================================================
 // #region 6. VISUALS DASHBOARD FUNCTIONS
 // =================================================================
@@ -739,17 +738,11 @@ function _formatMinutesToHours(totalMinutes) {
 }
 
 /**
- * Generates the Visuals Dashboard. (High Density Layout).
- * RESTORED (v2.7.8):
- * 1. Reads 15 columns to capture "Nights" (Col O).
- * 2. Calculates 'totalNights'.
- * 3. Adds "Nights Away" scorecard in M-N.
- * 4. Preserves "Total Time" in G-H and "SE Lead" in K-L.
- */
-
-/**
  * Generates the Visuals Dashboard.
- * v2.7.9: Adds "Nights Away" Scorecard and logic.
+ * v2.8.5 Fixes:
+ * 1. Strictly aligns Table to start at Column H (Index 8).
+ * 2. Fixes "DIVIDE expects number" error by pointing formulas to the correct Count column (I).
+ * 3. Fixes Chart source range.
  */
 function generateDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -768,7 +761,7 @@ function generateDashboard() {
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
   
-  // Read 15 columns (A-O) to include Nights
+  // Read 15 columns (A-O)
   const data = dataSheet.getRange(2, 1, lastRow - 1, 15).getValues();
   
   let total = data.length, external = 0, seLead = 0, inPerson = 0, totalMinutes = 0, totalNights = 0;
@@ -781,8 +774,8 @@ function generateDashboard() {
     if (row[5] === true) inPerson++;
     
     const tagName = row[6];
-    const duration = row[13];
-    const nights = row[14]; // Col O
+    const duration = row[13]; // Col N
+    const nights = row[14];   // Col O
     
     if (typeof duration === 'number') totalMinutes += duration;
     if (typeof nights === 'number') totalNights += nights;
@@ -796,54 +789,57 @@ function generateDashboard() {
   });
   let internal = total - external;
 
-  // --- Scorecards ---
+  // --- SCORECARD SECTION ---
   const bg = "#283e4d";
   const fg = "white";
 
-  // A-F: Static
-  const singles = [
+  // ROW 1 (Rows 3-4)
+  const row1Cards = [
     { title: "Total Meetings", val: total, col: 1 },
     { title: "External Meetings", val: external, col: 3 },
     { title: "Internal Meetings", val: internal, col: 5 }
   ];
   
-  singles.forEach(card => {
+  row1Cards.forEach(card => {
     visualsSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
     visualsSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
   });
 
-  // G-H: Total Time (Dynamic)
-  visualsSheet.getRange("O4").setFormula("=SUM(M7:M)");
+  // Total Time (Dynamic) - Sums N (Active Minutes)
+  visualsSheet.getRange("O4").setFormula("=SUM(N11:N)"); 
   visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Time Spent").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(O4/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // I-J: In Person
-  visualsSheet.getRange(3, 9, 1, 2).merge().setValue("In Person Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 9, 1, 2).merge().setValue(inPerson).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  // ROW 2 (Rows 5-6)
+  const row2Cards = [
+    { title: "In Person Mtgs", val: inPerson, col: 1 },
+    { title: "SE Lead Mtgs", val: seLead, col: 3 },
+    { title: "Nights Away", val: totalNights, col: 5 }
+  ];
 
-  // K-L: SE Lead
-  visualsSheet.getRange(3, 11, 1, 2).merge().setValue("SE Lead Mtgs").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 11, 1, 2).merge().setValue(seLead).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  row2Cards.forEach(card => {
+    visualsSheet.getRange(5, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    visualsSheet.getRange(6, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  });
 
-  // M-N: Nights Away (New)
-  visualsSheet.getRange(3, 13, 1, 2).merge().setValue("Nights Away").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-  visualsSheet.getRange(4, 13, 1, 2).merge().setValue(totalNights).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-
-  // Formatting
-  const scRange = visualsSheet.getRange(4, 1, 1, 14); 
+  // Formatting Rules
+  const scRanges = [visualsSheet.getRange(4, 1, 1, 8), visualsSheet.getRange(6, 1, 1, 6)];
   let scRules = [
-      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges([scRange]).build(),
-      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges([scRange]).build()
+      SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(100).setFontColor("#38761d").setBold(true).setRanges(scRanges).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberBetween(100, 150).setFontColor("#bf9000").setBold(true).setRanges(scRanges).build(),
+      SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(150).setFontColor("#cc0000").setBold(true).setRanges(scRanges).build()
   ];
   visualsSheet.setConditionalFormatRules(scRules);
 
-  // --- Interactive Tag Table (Starts at G6) ---
-  visualsSheet.getRange("G6").setValue("Hide").setFontWeight("bold").setBackground(bg).setFontColor(fg);
-  visualsSheet.getRange("H6").setValue("Tag Name").setFontWeight("bold").setBackground(bg).setFontColor(fg);
-  visualsSheet.getRange("I6").setValue("Count").setFontWeight("bold").setBackground(bg).setFontColor(fg);
-  visualsSheet.getRange("J6").setValue("Percentage").setFontWeight("bold").setBackground(bg).setFontColor(fg);
-  visualsSheet.getRange("K6").setValue("Total Time").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+
+  // --- INTERACTIVE TAG TABLE (Starts at H10) ---
+  // H=Tag, I=Count, J=Pct, K=Time, L=Hide
+  
+  visualsSheet.getRange("H10").setValue("Tag Name").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("I10").setValue("Count").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("J10").setValue("Percentage").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("K10").setValue("Total Time").setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange("L10").setValue("Hide").setFontWeight("bold").setBackground(bg).setFontColor(fg);
   
   const sortedTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
   if (sortedTags.length > 0) {
@@ -852,35 +848,52 @@ function generateDashboard() {
         return [tag, count, _formatMinutesToHours(timeInMinutes)];
     });
     
-    visualsSheet.getRange(7, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); 
-    visualsSheet.getRange(7, 11, tableData.length, 1).setValues(tableData.map(row => [row[2]])); 
-    visualsSheet.getRange(7, 13, tableData.length, 1).setValues(tableData.map(row => [tagTime.get(row[0]) || 0])); 
+    // Write Data (Start Row 11)
+    // 1. Write Tag(H) and Count(I)
+    visualsSheet.getRange(11, 8, tableData.length, 2).setValues(tableData.map(row => [row[0], row[1]])); 
     
-    visualsSheet.getRange(7, 7, visualsSheet.getMaxRows() - 6, 1).removeCheckboxes();
-    visualsSheet.getRange(7, 7, sortedTags.length, 1).insertCheckboxes();
+    // 2. Write Raw Minutes to Hidden Col M (13)
+    visualsSheet.getRange(11, 13, tableData.length, 1).setValues(tableData.map(row => [tagTime.get(row[0]) || 0])); 
+    
+    // 3. Insert Checkboxes in L (12)
+    visualsSheet.getRange(11, 12, visualsSheet.getMaxRows() - 10, 1).removeCheckboxes();
+    visualsSheet.getRange(11, 12, sortedTags.length, 1).insertCheckboxes();
     
     const numRows = sortedTags.length;
     const formulas = [];
+    const activeTimeFormulas = [];
     
-    for (let i = 7; i < 7 + numRows; i++) {
+    for (let i = 11; i < 11 + numRows; i++) {
         formulas.push([
-            `=IF(G${i}=TRUE, "-", I${i}/SUMIF($G$7:$G,FALSE,$I$7:$I))`, // J
-            `=IF(G${i}=TRUE, "-", TEXT(M${i}/1440, "[h]""hr ""mm""min"""))` // K
+            `=IF(L${i}=TRUE, "-", I${i}/SUMIF($L$11:$L,FALSE,$I$11:$I))`, // J: Pct (Uses I=Count)
+            `=IF(L${i}=TRUE, "-", TEXT(M${i}/1440, "[h]""hr ""mm""min"""))` // K: Time (Uses M=Raw)
         ]);
+        // N: Active Minutes (Uses M=Raw)
+        activeTimeFormulas.push([`=IF(L${i}=TRUE, 0, M${i})`]);
     }
-    visualsSheet.getRange(7, 10, numRows, 2).setFormulas(formulas);
-    visualsSheet.getRange(7, 10, numRows, 1).setNumberFormat("0.0%"); 
     
-    visualsSheet.getRange(6, 7, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
+    // Write J and K Formulas
+    visualsSheet.getRange(11, 10, numRows, 2).setFormulas(formulas);
+    
+    // Format Columns
+    visualsSheet.getRange(11, 9, numRows, 1).setNumberFormat("#,##0"); // I: Count
+    visualsSheet.getRange(11, 10, numRows, 1).setNumberFormat("0.0%"); // J: Percentage
+    
+    // Write N (Active Minutes)
+    visualsSheet.getRange(11, 14, numRows, 1).setFormulas(activeTimeFormulas);
+    
+    // Borders
+    visualsSheet.getRange(10, 8, sortedTags.length + 1, 5).setBorder(true, true, true, true, true, true);
   }
 
-  // Chart Source (O, P)
-  visualsSheet.getRange("O6").setValue("Chart Source (Hidden)").setFontStyle("italic");
-  visualsSheet.getRange("O7").setFormula("=FILTER(H7:I, G7:G=FALSE)");
+  // Chart Source (O, P) - Filtered from H, I based on L
+  // Filter Tag(H) and Count(I) where Hide(L) is False
+  visualsSheet.getRange("O10").setValue("Chart Source (Hidden)").setFontStyle("italic");
+  visualsSheet.getRange("O11").setFormula("=FILTER(H11:I, L11:L=FALSE)");
   visualsSheet.hideColumns(13, 4); // Hide M, N, O, P
 
   if (sortedTags.length > 0) {
-    const chartRange = visualsSheet.getRange("O7:P" + (7 + sortedTags.length));
+    const chartRange = visualsSheet.getRange("O11:P" + (11 + sortedTags.length));
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown').setOption('pieSliceText', 'percentage').setOption('legend', { position: 'right' })
       .setOption('is3D', true)
@@ -888,19 +901,24 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 10 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 400).setOption('width', 700).setPosition(6, 1, 0, 0).build();
+      .setOption('height', 400).setOption('width', 500).setPosition(10, 13, 0, 0).build(); // Chart in N (Col 14) to avoid table
     visualsSheet.insertChart(pieChart);
-  } else { visualsSheet.getRange("A6").setValue("No tagged meetings found."); }
+  } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
 
   const selectedQuarter = getConfig("QuarterOverride");
   let dateString = `Last ${getConfig("DaysBack")} Days`;
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(10, 120); 
-  visualsSheet.setColumnWidth(11, 120); 
-  visualsSheet.autoResizeColumns(7, 3); 
+  visualsSheet.setColumnWidth(9, 120); // I (Count)
+  visualsSheet.setColumnWidth(10, 120); // J (Pct)
+  visualsSheet.setColumnWidth(11, 120); // K (Time)
+  visualsSheet.setColumnWidth(12, 50);  // L (Hide)
+  visualsSheet.autoResizeColumns(8, 1); // H (Tag Name)
+  
+  // Resize single-column cards
+  [1, 2, 3, 5, 6, 7, 8].forEach(c => visualsSheet.setColumnWidth(c, 100));
+  
   ss.setActiveSheet(visualsSheet);
 }
-
-// end region
+// #endregion
