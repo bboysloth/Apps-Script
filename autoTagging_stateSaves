@@ -4,6 +4,7 @@
  * CHANGELOG:WHY THE CHANGE (v2.7.8):
  * 1. implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
  * 2. remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
+ * 3. exclude 'workingLocation'
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -165,6 +166,9 @@ function findEventsMissingTag() {
 
         for (const event of events) {
             // --- NEW LOGIC: Handle All-Day vs Timed ---
+            if (event.eventType === 'outOfOffice') continue; // Filter Out of Office All-Day Events
+            if (event.eventType === 'workingLocation') continue; // Filter Working Location Events Added (v2.7.9)
+            // Continue rest of logic
             let durationInMinutes = 0;
             let nightsCount = 0;
 
@@ -185,8 +189,7 @@ function findEventsMissingTag() {
                 }
                 // Note: Duration remains 0 for all-day events to protect metrics
             } else {
-                // Timed Event
-                if (event.eventType === 'outOfOffice') continue; 
+                // Timed Event(s)
                 const s = new Date(event.start.dateTime).getTime();
                 const e = new Date(event.end.dateTime).getTime();
                 durationInMinutes = Math.round((e - s) / 60000);
