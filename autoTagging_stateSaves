@@ -1,9 +1,9 @@
 /**
- * @file Meeting Tagger Tool v2.7.10
+ * @file Meeting Tagger Tool v2.7.11
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.7.10):
- * // --- NEW (v2.7.10): Location-Based In Person Suggestion ---
- * // --- This allows a suggestion of 'In Person' to occur if a physical address is present in the invite
+ * CHANGELOG:WHY THE CHANGE (v2.7.11):
+ * // --- NEW (v2.7.11): Location-Based In Person Suggestion (Toggle) ---
+ * // --- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -15,13 +15,16 @@
  * --------- removed references to 'getSheets()[0] and replaced them with more resilient 'getSheetByName("Untagged Meetings")'
  * Previous (v2.7.6): Stability Release
  * --------- updated documentation
- * Previous (v2.7.7): Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
+ * Previous (v2.7.7): Visuals Update
+ * --------- Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
+ * Previous (v2.7.8): New Feature 
+ * --------- implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
+ * Previous (v2.7.9): Visuals Update 
+ * --------- remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
+ * Previous (v2.7.10): Location-Based In Person Suggestion ---
+ * // --- This allows a suggestion of 'In Person' to occur if a physical address is present in the invite
  * 
- * Previous (v2.7.8): implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
- * 
- * Previous (v2.7.9): remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
- * 
- * @version 2.7.10
+ * @version 2.7.11
  */
 
 // =================================================================
@@ -109,9 +112,11 @@ function findEventsMissingTag() {
         const seLeadTagText = getConfig("SELeadTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
         const attendanceFilter = getConfig("AttendanceFilter");
-        // --- NEW (v2.7.10): Virtual Location Exclusions for In Person Auto-Suggestion ---
+        // --- NEW (v2.7.11): Location Based Auto-Suggestion Configuration ---
+        const locationFilterEnabled = (getConfig("LocationSetsInPerson") || "false").toString().toLowerCase() === "true";
         // Keywords often found in the event location field that signify a remote meeting.
         const virtualExclusions = ["teams", "zoom", "webex", "online", "call", "gmeet", "meet.google"];
+        // --- END NEW ---
         // --- END NEW ---
 
         // --- 2. Prepare tag data ---
@@ -253,18 +258,17 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-            // --- NEW (v2.7.10): Location-Based In Person Suggestion ---
-            if (event.location) {
-            const locationLower = event.location.toLowerCase();
+            // --- NEW (v2.7.11): Location-Based In Person Suggestion (Controllable) ---
+            if (locationFilterEnabled && event.location) {
+                const locationLower = event.location.toLowerCase();
 
-            // Check if the location is NOT a virtual meeting link
-            const isVirtual = virtualExclusions.some(keyword => locationLower.includes(keyword));
+                // Check if the location is NOT a virtual meeting link
+                const isVirtual = virtualExclusions.some(keyword => locationLower.includes(keyword));
 
-            // If location is present AND is not a known virtual link, suggest In Person
-            // This overrides the original state but can be overridden by a tag keyword.
-              if (!isVirtual && locationLower.trim() !== "") {
-              suggestedInPerson = true;
-              }
+                // If location is enabled AND is not a known virtual link, suggest In Person
+                if (!isVirtual && locationLower.trim() !== "") {
+                    suggestedInPerson = true;
+                }
             }
             // --- END NEW ---
 
