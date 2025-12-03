@@ -1,9 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.7.11
+ * @file Meeting Tagger Tool v2.7.11.1
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.7.11):
+ * CHANGELOG:WHY THE CHANGE (v2.7.11.1):
  * // --- NEW (v2.7.11): Location-Based In Person Suggestion (Toggle) ---
  * // --- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
+ * // --- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3' 
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -553,7 +554,8 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
     
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
-        sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, headers.length).setFontLine('line-through');
+        // FIX: Apply Light Green 3 background to A:C instead of strikethrough
+        sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, 3).setBackground('#d9ead3');
     }
 }
 // #endregion
