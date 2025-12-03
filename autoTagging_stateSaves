@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.8.0
+ * @file Meeting Tagger Tool v2.8.1 (FIX BROKEN 8.0)
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
  * CHANGELOG:WHY THE CHANGE (v2.8.0):
  * // --- Changed Lists to grab from a new sheet for scalable UX
@@ -561,8 +561,9 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 }
 
 /**
- * NEW (v2.8): Reads list data from the dedicated "Filter Lists" sheet.
+ * NEW (v3.0): Reads list data from the dedicated "Filter Lists" sheet.
  * Finds the column matching listName and returns all non-blank, lowercased values.
+ * This helper replaces the need for getConfig() + .split(",") for lists.
  * @param {string} listName The header name (e.g., 'IgnorePhrases').
  * @returns {Array} Array of lowercased, trimmed strings/keywords.
  */
