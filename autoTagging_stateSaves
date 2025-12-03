@@ -1,32 +1,33 @@
 /**
- * @file Meeting Tagger Tool v2.8.1 (FIX BROKEN 8.0)
+ * @file Meeting Tagger Tool v2.7.12.1
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.8.0):
- * // --- Changed Lists to grab from a new sheet for scalable UX
+ * CHANGELOG:WHY THE CHANGE (v2.7.12.1):
  * 
+ * // --- NEW (v2.7.12.1): Apply Suggestion Borders (Method Signature Fix) ---
+ * 
+ * Previous (v2.7.11): Location-Based In Person Suggestion (Toggle) ---
+ * --------- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
+ * --------- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3' 
+ * Previous (v2.7.10): Location-Based In Person Suggestion ---
+ * --------- This allows a suggestion of 'In Person' to occur if a physical address is present in the invite
+ * Previous (v2.7.9): Visuals Update 
+ * --------- remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
+ * Previous (v2.7.8): New Feature 
+ * --------- implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
+ * Previous (v2.7.7): Visuals Update
+ * --------- Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
+ * Previous (v2.7.6): Stability Release
+ * --------- updated documentation
+ * Previous (v2.7.5): Added unsaved changes flag to the tagSheet as a helper for 'Config: Update Tag Dropdowns & Colors'
+ * --------- removed references to 'getSheets()[0] and replaced them with more resilient 'getSheetByName("Untagged Meetings")'
+ * Previous (v2.7.4): Added {sendUpdates: "none"} to stop email notifications
+ * --------- commented out a filter of 'group.calendars.google.com because it was excluding 'VCE Events'
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
  * --------- Allow 'SE Lead' (a standalone property) to be saved even if 'Add Tag to Meeting' is blank
  * --------- Adds 'AutoSELead' and 'AutoInPerson' strings to suggest a checkbox on Config page
- * Previous (v2.7.4): Added {sendUpdates: "none"} to stop email notifications
- * --------- commented out a filter of 'group.calendars.google.com because it was excluding 'VCE Events'
- * Previous (v2.7.5): Added unsaved changes flag to the tagSheet as a helper for 'Config: Update Tag Dropdowns & Colors'
- * --------- removed references to 'getSheets()[0] and replaced them with more resilient 'getSheetByName("Untagged Meetings")'
- * Previous (v2.7.6): Stability Release
- * --------- updated documentation
- * Previous (v2.7.7): Visuals Update
- * --------- Rearranged scorecards to the user's preferred layout to remove visual inconsistency with 'Total Time Spent' column on Visuals tab
- * Previous (v2.7.8): New Feature 
- * --------- implementing the "Nights Away" feature with all added/adjusted lines containing (v2.7.8) in the comments
- * Previous (v2.7.9): Visuals Update 
- * --------- remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
- * Previous (v2.7.10): Location-Based In Person Suggestion ---
- * // --- This allows a suggestion of 'In Person' to occur if a physical address is present in the invite
- * Previous (v2.7.11.1): Location-Based In Person Toggle ---
- * // --- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
- * // --- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3'
  * 
- * @version 2.8.0
+ * @version 2.7.12.1
  */
 
 // =================================================================
@@ -97,18 +98,16 @@ function findEventsMissingTag() {
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
         const selectedQuarter = getConfig("QuarterOverride");
-
-        // --- V3.0: Read Lists from Dedicated Sheet ---
-        const ignorePhrases = _getFilterList("IgnorePhrases");
-        const ignoreExact = _getFilterList("IgnoreExactTitles");
-        const ignoreFromEmails = _getFilterList("IgnoreFromEmails");
-        const ignoreToEmails = _getFilterList("IgnoreToEmails");
-        const autoSeLeadKeywords = _getFilterList("AutoSELeadKeywords");
-        const autoInPersonKeywords = _getFilterList("AutoInPersonKeywords");
-        const nightsAwayKeywords = _getFilterList("NightsAwayKeywords"); // NEW: Nights Away Logic (v2.7.8)
-        // --- END V3.0 LIST READ ---
-        
+        const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+        // NEW: Nights Away Logic (v2.7.8)
+        const nightsAwayKeywords = (getConfig("NightsAwayKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
         const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
+        
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
         const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
@@ -118,8 +117,10 @@ function findEventsMissingTag() {
         const attendanceFilter = getConfig("AttendanceFilter");
         // --- NEW (v2.7.11): Location Based Auto-Suggestion Configuration ---
         const locationFilterEnabled = (getConfig("LocationSetsInPerson") || "false").toString().toLowerCase() === "true";
-        // --- (v.2.7.11): Keywords often found in the event location field that signify a remote meeting.
+        // Keywords often found in the event location field that signify a remote meeting.
         const virtualExclusions = ["teams", "zoom", "webex", "online", "call", "gmeet", "meet.google"];
+        // --- END NEW ---
+        // --- END NEW ---
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
@@ -349,7 +350,10 @@ function findEventsMissingTag() {
         // --- 6. Write Results ---
         const sheet = file.getSheetByName("Untagged Meetings");
         if (sheet.getLastRow() > 0) {
-             sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
+         // Clear content and basic formatting
+         sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
+         // NEW (v2.7.12.2): Explicitly clear all borders from the sheet
+         sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).setBorder(false, false, false, false, false, false, false, null);
         }
         // Added "Nights" to headers
         const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
@@ -558,35 +562,46 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         // FIX: Apply Light Green 3 background to A:C instead of strikethrough
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, 3).setBackground('#d9ead3');
     }
+    // --- NEW (v2.7.12.1): Apply Suggestion Borders (Method Signature Fix) ---
+    const SUGGESTION_COLOR = "#283e4d"; // Dark Blue Header Color
+    const BORDER_STYLE = SpreadsheetApp.BorderStyle.SOLID_MEDIUM;
+
+    if (lastRow > 1) {
+        // Read the visible data (E, F, G) and original data (K, L, M) back from the sheet
+        // We read a range that includes E:G and K:M for comparison (9 columns wide).
+        const checkRange = sheet.getRange(startRow, 5, lastRow - 1, 9).getValues(); 
+
+        for (let i = 0; i < checkRange.length; i++) {
+            const row = checkRange[i];
+            const visibleRow = i + startRow;
+
+            // These are the suggested/current values from the sheet
+            const suggestedSE = row[0]; // Col E (visible)
+            const suggestedIP = row[1]; // Col F (visible)
+            const suggestedTag = row[2]; // Col G (visible)
+            
+            // These are the original values from the hidden columns
+            const originalSE = row[6];  // Col K (hidden)
+            const originalIP = row[7];  // Col L (hidden)
+            const originalTag = row[8]; // Col M (hidden)
+
+            // The border is applied if the visible value does NOT match the original value 
+            // AND the visible value is TRUE/non-blank (meaning the script made the suggestion).
+            
+            // FIX: Use the explicit 8-argument signature to define color and style.
+            if (suggestedSE !== originalSE && suggestedSE) {
+                sheet.getRange(visibleRow, 5).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            }
+            if (suggestedIP !== originalIP && suggestedIP) {
+                sheet.getRange(visibleRow, 6).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            }
+            if (suggestedTag !== originalTag && suggestedTag) {
+                sheet.getRange(visibleRow, 7).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            }
+        }
+    }
+    // --- END NEW LOGIC ---
 }
-
-/**
- * NEW (v3.0): Reads list data from the dedicated "Filter Lists" sheet.
- * Finds the column matching listName and returns all non-blank, lowercased values.
- * This helper replaces the need for getConfig() + .split(",") for lists.
- * @param {string} listName The header name (e.g., 'IgnorePhrases').
- * @returns {Array} Array of lowercased, trimmed strings/keywords.
- */
-function _getFilterList(listName) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const listSheet = ss.getSheetByName("Filter Lists");
-  if (!listSheet) return []; // Return empty array if sheet doesn't exist
-
-  // Find the column based on the header name
-  const headers = listSheet.getRange('A1:1').getValues()[0];
-  const colIndex = headers.findIndex(h => h && h.toString().trim() === listName);
-
-  if (colIndex === -1) return []; // List header not found
-
-  // Read all values from row 2 down in the found column
-  const columnData = listSheet.getRange(2, colIndex + 1, listSheet.getLastRow() - 1, 1).getValues();
-
-  // Flatten the array, filter out blanks, convert to lowercase, and return
-  return columnData.flat()
-    .filter(String)
-    .map(value => value.toString().trim().toLowerCase());
-}
-
 // #endregion
 
 
