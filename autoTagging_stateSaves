@@ -106,7 +106,7 @@ function findEventsMissingTag() {
         const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
         
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
-        const seTaggingMode = (getConfig("SETagMode") || "false").toString().toLowerCase() === "true";
+        const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
         const modifier = getConfig("InPersonModifier");
         const seLeadTagText = getConfig("SELeadTagText");
@@ -335,7 +335,7 @@ function findEventsMissingTag() {
             if (showTaggedMeetings) {
                 if (hasMainTag) { fullyTaggedMeetings.push(rowData); } 
                 else { noTagMeetings.push(rowData); }
-            } else if (seTaggingMode) {
+            } else if (filterForMissingSETags) {
                 if (hasSETagInDescription) { /* Hide */ } 
                 else if (hasMainTag) { aeTaggedMeetings.push(rowData); } 
                 else { noTagMeetings.push(rowData); }
@@ -366,7 +366,7 @@ function findEventsMissingTag() {
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
         // --- 7. Formatting ---
-        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { seTaggingMode, showTaggedMeetings, externalFilter });
+        _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { filterForMissingSETags, showTaggedMeetings, externalFilter });
         
         updateTagDropdownsAndColors(true); 
         
@@ -538,7 +538,7 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
         }
-    } else if (configs.seTaggingMode) {
+    } else if (configs.filterForMissingSETags) {
         if (noTagMeetings.length > 0) {
             sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
         }
