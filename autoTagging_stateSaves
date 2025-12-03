@@ -1,10 +1,8 @@
 /**
- * @file Meeting Tagger Tool v2.7.11.1
+ * @file Meeting Tagger Tool v2.8.0
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.7.11.1):
- * // --- NEW (v2.7.11): Location-Based In Person Suggestion (Toggle) ---
- * // --- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
- * // --- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3' 
+ * CHANGELOG:WHY THE CHANGE (v2.8.0):
+ * // --- Changed Lists to grab from a new sheet for scalable UX
  * 
  * Previous (v2.7.3): Added URL stripping from keyword auto-tagging results
  * --------- Ignore outOfOffice events on meetings list
@@ -24,8 +22,11 @@
  * --------- remaking the 'generateDashboard' visual to make an scorecard with 'Nights Away' as a value
  * Previous (v2.7.10): Location-Based In Person Suggestion ---
  * // --- This allows a suggestion of 'In Person' to occur if a physical address is present in the invite
+ * Previous (v2.7.11.1): Location-Based In Person Toggle ---
+ * // --- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
+ * // --- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3'
  * 
- * @version 2.7.11
+ * @version 2.8.0
  */
 
 // =================================================================
@@ -96,16 +97,18 @@ function findEventsMissingTag() {
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
         const selectedQuarter = getConfig("QuarterOverride");
-        const ignorePhrases = (getConfig("IgnorePhrases") || "").split(",").map(s => s.trim()).filter(Boolean);
-        const ignoreExact = (getConfig("IgnoreExactTitles") || "").split(",").map(s => s.trim()).filter(Boolean);
-        const ignoreFromEmails = (getConfig("IgnoreFromEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
-        const ignoreToEmails = (getConfig("IgnoreToEmails") || "").split(",").map(s => s.trim()).filter(Boolean);
-        const autoSeLeadKeywords = (getConfig("AutoSELeadKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-        const autoInPersonKeywords = (getConfig("AutoInPersonKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-        // NEW: Nights Away Logic (v2.7.8)
-        const nightsAwayKeywords = (getConfig("NightsAwayKeywords") || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-        const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
+
+        // --- V3.0: Read Lists from Dedicated Sheet ---
+        const ignorePhrases = _getFilterList("IgnorePhrases");
+        const ignoreExact = _getFilterList("IgnoreExactTitles");
+        const ignoreFromEmails = _getFilterList("IgnoreFromEmails");
+        const ignoreToEmails = _getFilterList("IgnoreToEmails");
+        const autoSeLeadKeywords = _getFilterList("AutoSELeadKeywords");
+        const autoInPersonKeywords = _getFilterList("AutoInPersonKeywords");
+        const nightsAwayKeywords = _getFilterList("NightsAwayKeywords"); // NEW: Nights Away Logic (v2.7.8)
+        // --- END V3.0 LIST READ ---
         
+        const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
         const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true";
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
@@ -115,10 +118,8 @@ function findEventsMissingTag() {
         const attendanceFilter = getConfig("AttendanceFilter");
         // --- NEW (v2.7.11): Location Based Auto-Suggestion Configuration ---
         const locationFilterEnabled = (getConfig("LocationSetsInPerson") || "false").toString().toLowerCase() === "true";
-        // Keywords often found in the event location field that signify a remote meeting.
+        // --- (v.2.7.11): Keywords often found in the event location field that signify a remote meeting.
         const virtualExclusions = ["teams", "zoom", "webex", "online", "call", "gmeet", "meet.google"];
-        // --- END NEW ---
-        // --- END NEW ---
 
         // --- 2. Prepare tag data ---
         const tagsSheet = file.getSheetByName("Tags");
@@ -558,6 +559,33 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, 3).setBackground('#d9ead3');
     }
 }
+
+/**
+ * NEW (v2.8): Reads list data from the dedicated "Filter Lists" sheet.
+ * Finds the column matching listName and returns all non-blank, lowercased values.
+ * @param {string} listName The header name (e.g., 'IgnorePhrases').
+ * @returns {Array} Array of lowercased, trimmed strings/keywords.
+ */
+function _getFilterList(listName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const listSheet = ss.getSheetByName("Filter Lists");
+  if (!listSheet) return []; // Return empty array if sheet doesn't exist
+
+  // Find the column based on the header name
+  const headers = listSheet.getRange('A1:1').getValues()[0];
+  const colIndex = headers.findIndex(h => h && h.toString().trim() === listName);
+
+  if (colIndex === -1) return []; // List header not found
+
+  // Read all values from row 2 down in the found column
+  const columnData = listSheet.getRange(2, colIndex + 1, listSheet.getLastRow() - 1, 1).getValues();
+
+  // Flatten the array, filter out blanks, convert to lowercase, and return
+  return columnData.flat()
+    .filter(String)
+    .map(value => value.toString().trim().toLowerCase());
+}
+
 // #endregion
 
 
