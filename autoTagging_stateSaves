@@ -1,10 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.7.12.1
+ * @file Meeting Tagger Tool v2.7.12.2
  * @description Ultimate Meeting Tag Monitoring at your fingertips.
- * CHANGELOG:WHY THE CHANGE (v2.7.12.1):
+ * CHANGELOG:WHY THE CHANGE (v2.7.12.2):
+ * --------- BUG FIXES TO ADDRESS DATES BEYOND 180DAYS (API Limitation)
  * 
- * // --- NEW (v2.7.12.1): Apply Suggestion Borders (Method Signature Fix) ---
- * 
+ * Previous (v2.7.12.1): Apply Suggestion Borders (Method Signature Fix) ---
  * Previous (v2.7.11): Location-Based In Person Suggestion (Toggle) ---
  * --------- This allows a suggestion of 'In Person' ONLY if toggled on in the Config Section
  * --------- .1 was a simple change to the 'strikethrough' to fill the cell with 'light green 3' 
@@ -27,7 +27,7 @@
  * --------- Allow 'SE Lead' (a standalone property) to be saved even if 'Add Tag to Meeting' is blank
  * --------- Adds 'AutoSELead' and 'AutoInPerson' strings to suggest a checkbox on Config page
  * 
- * @version 2.7.12.1
+ * @version 2.7.12.2
  */
 
 // =================================================================
@@ -350,11 +350,11 @@ function findEventsMissingTag() {
         // --- 6. Write Results ---
         const sheet = file.getSheetByName("Untagged Meetings");
         if (sheet.getLastRow() > 0) {
-         // Clear content and basic formatting
-         sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
-         // NEW (v2.7.12.2): Explicitly clear all borders from the sheet
-         sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).setBorder(false, false, false, false, false, false, false, null);
+            sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
+            // NEW (v2.7.12.2): Explicitly clear all borders from the sheet
+            sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).setBorder(false, false, false, false, false, false, false, null);
         }
+        
         // Added "Nights" to headers
         const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -456,6 +456,8 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(seLeadRegex, '').trim();
           const aggressiveRemovalRegex = new RegExp(tagPrefix + ".*", "g");
           description = description.replace(aggressiveRemovalRegex, '');
+          // NEW (v2.7.12.1): Aggressive character cleaning to prevent API Bad Request errors on old events.
+          description = description.replace(/[\u0000-\u001F\u007F-\u009F]/g, '').replace(/&[a-z0-9]+;/gi, '');
           description = description.split('\n').filter(line => line.trim() !== '').join('\n').trim();
 
           if (currentSeLead) description += "\n" + seLeadTag;
@@ -611,22 +613,58 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
   let startMonth, endMonth, startYear, endYear;
-  const calendarYear = fiscalYear - 1;
+  // calendarYear is the Calendar Year that *precedes* the Fiscal Year number (e.g., FY26 starts in CY25)
+  const calendarYear = fiscalYear - 1; 
+  
+  // FIX: Corrected month indices for Q1 and Q3 to accurately capture 3 full months.
+  // JS Months are 0-indexed (0=Jan, 1=Feb). new Date(Y, M, 0) gives last day of previous month.
   switch (quarter) {
-    case 1: startMonth = 1; endMonth = 3; startYear = calendarYear; endYear = calendarYear; break;
-    case 2: startMonth = 4; endMonth = 6; startYear = calendarYear; endYear = calendarYear; break;
-    case 3: startMonth = 7; endMonth = 9; startYear = calendarYear; endYear = calendarYear; break;
-    case 4: startMonth = 10; endMonth = 0; startYear = calendarYear; endYear = calendarYear + 1; break;
+    case 1: 
+        startMonth = 1; // February (Month Index 1)
+        endMonth = 4;   // May (End date calculation will yield April 30)
+        startYear = calendarYear; 
+        endYear = calendarYear; 
+        break;
+    case 2: 
+        startMonth = 4; // May
+        endMonth = 7;   // August (End date calculation will yield July 31)
+        startYear = calendarYear; 
+        endYear = calendarYear; 
+        break;
+    case 3: 
+        startMonth = 7;  // August
+        endMonth = 10;   // November (End date calculation will yield Oct 31)
+        startYear = calendarYear; 
+        endYear = calendarYear; 
+        break;
+    case 4: 
+        startMonth = 10; // November
+        endMonth = 1;    // February (End date calculation will yield Jan 31 of CY+1)
+        startYear = calendarYear; 
+        endYear = calendarYear + 1; 
+        break;
     default: throw new Error("Invalid quarter.");
   }
-  const endDate = new Date(endYear, endMonth + 1, 0); endDate.setHours(23, 59, 59, 999);
+  
+  const endDate = new Date(endYear, endMonth, 0); endDate.setHours(23, 59, 59, 999);
   return { start: new Date(startYear, startMonth, 1), end: endDate };
 }
 
 function _getVerkadaFiscalQuarter(date) {
-  const month = date.getMonth(), year = date.getFullYear();
-  const fy = month >= 1 ? year + 1 : year;
+  // Verkada's FY starts on Feb 1 (Month Index 1).
+  const month = date.getMonth(); 
+  const year = date.getFullYear();
+  
+  // If month is Jan (0), the FY is the current year. If month is Feb (1) or later, the FY is next year.
+  const fy = month >= 1 ? year + 1 : year; 
+  
+  // Calculate quarter based on 0-indexed month:
+  // FQ1 (Feb, Mar, Apr) = Months 1, 2, 3
+  // FQ2 (May, Jun, Jul) = Months 4, 5, 6
+  // FQ3 (Aug, Sep, Oct) = Months 7, 8, 9
+  // FQ4 (Nov, Dec, Jan) = Months 10, 11, 0
   const q = (month >= 1 && month <= 3) ? 1 : (month >= 4 && month <= 6) ? 2 : (month >= 7 && month <= 9) ? 3 : 4;
+  
   return { fiscalYear: fy, quarter: q, name: `FY${fy.toString().slice(-2)} Q${q}` };
 }
 
@@ -646,6 +684,7 @@ function updateQuarterDropdown() {
     if (i === 0) name += " (Current)";
     quarters.push(name);
     const dates = _getDatesForVerkadaFQ(fq.fiscalYear, fq.quarter);
+    // Set the next date range to the day before the start of the current quarter
     today = new Date(dates.start.getTime() - 1);
   }
   finder.offset(0, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(quarters, true).setAllowInvalid(false).build());
@@ -671,6 +710,7 @@ function updateTagDropdownsAndColors(silentMode = false) {
     const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
     
     // --- FIX (v2.6.3): Add a blank option to the top ---
+    // --- Currently This is IGNORED
     const tagNames = [[""]]; // Start with a blank
     const tagColors = [["#ffffff"]]; // White background for the blank
     // --- END FIX ---
