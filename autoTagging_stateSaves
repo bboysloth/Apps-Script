@@ -1,6 +1,10 @@
 /**
- * @file Meeting Tagger Tool v2.8.0
- * @description MAJOR UPDATE: DATA MIGRATION.
+ * @file Meeting Tagger Tool v2.8.1
+ * @description Added LocationRequiresExternal Flag
+ * * CHANGELOG v2.8.1:
+ * 1. added LocationRequiresExternal Flag on config page to reduce 'In Person' suggestions when meeting is internal. 
+ * ----- This removes matches for events like 333 or Verkada Sponsored Events which you may NOT want In Person to be suggested
+ * 
  * * CHANGELOG v2.8.0:
  * 1. MOVING DATA: All keyword lists (IgnorePhrases, AutoSELead, etc.) are now read from the "Filter Lists" sheet.
  * 2. CONFIG CLEANUP: The "Config" sheet now only holds TRUE/FALSE toggles for these lists.
@@ -11,7 +15,7 @@
  * - Aggressive character cleaning to prevent "Bad Request" API errors
  * - Visual "Suggestion Borders" (Dark Blue)
  * - "Changes Detected" indicator on Tags sheet
- * * @version 2.8.0
+ * * @version 2.8.1
  */
 
 // =================================================================
@@ -78,34 +82,37 @@ function saveConfigAndRun() {
 function findEventsMissingTag() {
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
-        // --- 1. Configuration & Data Loading (v2.8.0) ---
+        // --- 1. CONFIGURATION (v3.0.1) ---
         const daysBack = parseInt(getConfig("DaysBack"), 10);
         const daysAhead = parseInt(getConfig("DaysAhead"), 10);
         const selectedQuarter = getConfig("QuarterOverride");
-        
-        // --- READ LISTS (From "Filter Lists" Sheet) ---
-        // Note: Title lists are RAW (Case/Emoji sensitive). Others are Lowercase.
+        const MAX_PATCH_DAYS_PAST = 180; 
+
+        // Lists
         const ignorePhrasesList = _getFilterList("IgnorePhrases");
         const ignoreExactList = _getFilterList("IgnoreExactTitles");
-        
         const ignoreFromEmailsList = _getFilterList("IgnoreFromEmails").map(s => s.toLowerCase());
         const ignoreToEmailsList = _getFilterList("IgnoreToEmails").map(s => s.toLowerCase());
-        const autoSeLeadKeywords = _getFilterList("AutoSELeadKeywords").map(s => s.toLowerCase());
-        const autoInPersonKeywords = _getFilterList("AutoInPersonKeywords").map(s => s.toLowerCase());
-        const nightsAwayKeywords = _getFilterList("NightsAwayKeywords").map(s => s.toLowerCase());
+        const autoSeLeadList = _getFilterList("AutoSELeadKeywords").map(s => s.toLowerCase());
+        const autoInPersonList = _getFilterList("AutoInPersonKeywords").map(s => s.toLowerCase());
+        const nightsAwayList = _getFilterList("NightsAwayKeywords").map(s => s.toLowerCase());
 
-        // --- READ TOGGLES (From "Config" Sheet) ---
+        // Toggles
         const useIgnorePhrases = (getConfig("IgnorePhrases") || "false").toString().toLowerCase() === "true";
         const useIgnoreExact = (getConfig("IgnoreExactTitles") || "false").toString().toLowerCase() === "true";
         const useIgnoreFrom = (getConfig("IgnoreFromEmails") || "false").toString().toLowerCase() === "true";
         const useIgnoreTo = (getConfig("IgnoreToEmails") || "false").toString().toLowerCase() === "true";
+        const useAutoSeLead = (getConfig("AutoSELeadKeywords") || "false").toString().toLowerCase() === "true";
+        const useAutoInPerson = (getConfig("AutoInPersonKeywords") || "false").toString().toLowerCase() === "true";
 
-        // --- OTHER SETTINGS ---
+        // Settings
         const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
         const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
-        const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true";
+        const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true"; 
         const showTaggedMeetings = (getConfig("ShowTaggedMeetings") || "false").toString().toLowerCase() === "true";
         const locationFilterEnabled = (getConfig("LocationSetsInPerson") || "false").toString().toLowerCase() === "true";
+        // NEW (v3.0.1): Read the Location Strictness Toggle
+        const locationRequiresExternal = (getConfig("LocationRequiresExternal") || "false").toString().toLowerCase() === "true";
         
         const modifier = getConfig("InPersonModifier");
         const seLeadTagText = getConfig("SELeadTagText");
@@ -113,9 +120,8 @@ function findEventsMissingTag() {
         const attendanceFilter = getConfig("AttendanceFilter");
         
         const virtualExclusions = ["teams", "zoom", "webex", "online", "call", "gmeet", "meet.google"];
-        const MAX_PATCH_DAYS_PAST = 180; // Safety limit
 
-        // --- 2. Prepare tag data ---
+        // --- 2. PREPARE TAG DATA ---
         const tagsSheet = file.getSheetByName("Tags");
         const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
         
@@ -144,7 +150,7 @@ function findEventsMissingTag() {
             }
         });
         
-        // --- 3. Date Logic ---
+        // --- 3. DATE LOGIC ---
         let start, end;
         if (selectedQuarter && selectedQuarter !== "" && selectedQuarter !== "None") {
             const parts = selectedQuarter.replace(" (Current)", "").trim().match(/FY(\d{2})\s*Q(\d)/);
@@ -156,7 +162,7 @@ function findEventsMissingTag() {
             end = new Date(); end.setHours(23, 59, 59, 999); end.setDate(end.getDate() + daysAhead);
         }
         
-        // --- 4. Fetch Events ---
+        // --- 4. FETCH EVENTS ---
         const calendarId = CalendarApp.getDefaultCalendar().getId();
         const userEmail = Session.getActiveUser().getEmail().toLowerCase();
         let allEvents = [], pageToken = null;
@@ -166,41 +172,38 @@ function findEventsMissingTag() {
           pageToken = response.nextPageToken;
         } while (pageToken);
 
-        // --- 5. Process Events ---
+        // --- 5. PROCESS EVENTS ---
         const events = allEvents;
         const noTagMeetings = [], aeTaggedMeetings = [], fullyTaggedMeetings = [];
 
         for (const event of events) {
-            // --- GLOBAL FILTERS ---
             if (event.eventType === 'outOfOffice') continue; 
             if (event.eventType === 'workingLocation') continue;
 
             const eventStartTimeMs = new Date(event.start.dateTime || event.start.date).getTime();
             const todayMs = new Date().getTime();
             if ((todayMs - eventStartTimeMs) > (MAX_PATCH_DAYS_PAST * 24 * 60 * 60 * 1000)) {
-                continue; // Skip old events
+                continue; 
             }
 
             let durationInMinutes = 0;
             let nightsCount = 0;
 
             if (event.start.date) {
-                // All-Day Event
                 if (!includeAllDayEvents) continue; 
                 
                 const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
                 const allDaySearchText = (event.summary + ' ' + (event.description || "")).toLowerCase();
-                
-                const hasNightsKeyword = nightsAwayKeywords.some(k => allDaySearchText.includes(k));
+                const hasNightsKeyword = nightsAwayList.some(k => allDaySearchText.includes(k));
 
                 if (isMyEvent && hasNightsKeyword) {
                     const s = new Date(event.start.date);
                     const e = new Date(event.end.date);
                     const diff = Math.abs(e - s);
-                    nightsCount = Math.ceil(diff / (1000 * 60 * 60 * 24));
+                    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+                    nightsCount = Math.max(0, days - 1); // N-1 logic
                 }
             } else {
-                // Timed Event
                 const s = new Date(event.start.dateTime).getTime();
                 const e = new Date(event.end.dateTime).getTime();
                 durationInMinutes = Math.round((e - s) / 60000);
@@ -209,30 +212,22 @@ function findEventsMissingTag() {
             if (!event.summary) continue;
             const title = event.summary;
             
-            // --- v2.8.0 FILTERING LOGIC (Toggle + List) ---
-            
-            // 1. Exact Title Match
             if (useIgnoreExact && ignoreExactList.includes(title)) continue;
-
-            // 2. Phrase Match
             if (useIgnorePhrases && ignorePhrasesList.some(p => title.includes(p))) continue;
             
             const organizerEmail = event.organizer ? event.organizer.email.toLowerCase() : (event.creator ? event.creator.email.toLowerCase() : '');
             const attendees = (event.attendees || []).map(a => a.email.toLowerCase()).filter(Boolean);
 
-            // 3. From Email Match
             if (useIgnoreFrom && ignoreFromEmailsList.includes(organizerEmail)) continue;
-
-            // 4. To Email Match
             if (useIgnoreTo && attendees.some(a => ignoreToEmailsList.includes(a))) continue;
             
             const allParticipants = [...new Set([organizerEmail, ...attendees])];
             const isInternalEntity = email => email && (email.toLowerCase().endsWith("@verkada.com") || email.toLowerCase().endsWith("@resource.calendar.google.com") || email.toLowerCase().endsWith("@group.calendar.google.com"));
             const isPurelyInternal = !allParticipants.some(p => !isInternalEntity(p));
-            
+            const hasExternalAttendee = !isPurelyInternal;
+
             if (externalFilter && isPurelyInternal) continue;
 
-            // Attendance Filter
             if (attendanceFilter === "Show Only Accepted/Maybe") {
                 let myStatus = "none"; 
                 if (organizerEmail === userEmail) {
@@ -244,7 +239,6 @@ function findEventsMissingTag() {
                 if (!["accepted", "tentative", "organizer"].includes(myStatus)) continue; 
             }
             
-            // Define Description
             let description = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '');
             const hasMainTag = description.includes(tagPrefix);
             
@@ -258,13 +252,13 @@ function findEventsMissingTag() {
                 const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
                 if (tagLine) {
                     hasSETagInDescription = tagLine.includes("(SE)");
-                    // FIX (v2.7.13): Stop reading at the first semicolon to ignore trailing text
                     let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
-                    let abbreviatedTag = rawContent.split(';')[0] + ';';
-                    if (modifier && abbreviatedTag.includes(modifier)) {
+                    let abbreviatedTag = rawContent.split(';')[0] + ';'; 
+
+                    if (modifier && rawContent.includes(modifier)) {
                       originalInPerson = true;
                     }
-                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim();
+                    let lookupKey = abbreviatedTag; 
                     originalTag = tagMap.get(lookupKey) || "";
                 }
             }
@@ -273,21 +267,25 @@ function findEventsMissingTag() {
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-            // Location-Based In Person Suggestion
+            // --- LOCATION LOGIC (Updated v3.0.1) ---
             if (locationFilterEnabled && event.location) {
                 const locationLower = event.location.toLowerCase();
                 const isVirtual = virtualExclusions.some(keyword => locationLower.includes(keyword));
+                
                 if (!isVirtual && locationLower.trim() !== "") {
-                    suggestedInPerson = true;
+                    // Check strictness: if Enabled, MUST have external attendee.
+                    if (locationRequiresExternal && !hasExternalAttendee) {
+                        // Internal meeting in a conference room -> Do NOT suggest In Person
+                    } else {
+                        suggestedInPerson = true;
+                    }
                 }
             }
 
-            // Auto-Tag Logic (Title Priority + URL Strip)
             const titleSearchText = title.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             let tagFound = false;
             let descriptionSearchText = ""; 
 
-            // Loop 1: Titles
             for (const [keyword, rules] of keywordMap.entries()) {
                 if (rules.titleTag && rules.titleTag !== "CONFLICT" && titleSearchText.includes(keyword)) {
                     suggestedTag = rules.titleTag;
@@ -295,7 +293,6 @@ function findEventsMissingTag() {
                     break; 
                 }
             }
-            // Loop 2: Descriptions
             if (!tagFound) {
                 descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
                 for (const [keyword, rules] of keywordMap.entries()) {
@@ -306,31 +303,32 @@ function findEventsMissingTag() {
                 }
             }
 
-            // Auto-SE-Lead & Auto-In-Person
             if (tagFound) { 
                 descriptionSearchText = description.replace(/(https?:\/\/[^\s]+)/g, '').toLowerCase();
             }
             const fullSearchText = (titleSearchText + ' ' + descriptionSearchText);
 
-            for (const keyword of autoSeLeadKeywords) {
-                if (fullSearchText.includes(keyword)) {
-                    suggestedSeLead = true;
-                    break; 
+            if (useAutoSeLead) {
+                for (const keyword of autoSeLeadList) {
+                    if (fullSearchText.includes(keyword)) {
+                        suggestedSeLead = true;
+                        break; 
+                    }
                 }
             }
-            if (suggestedTag) {
-                for (const keyword of autoInPersonKeywords) {
+            
+            if (suggestedTag && useAutoInPerson) {
+                for (const keyword of autoInPersonList) {
                     if (fullSearchText.includes(keyword)) {
                         suggestedInPerson = true;
                         break; 
                     }
                 }
             }
-
-            const eventStartTime = new Date(event.start.dateTime || event.start.date);
-            const hasExternalAttendee = !isPurelyInternal;
             
-            // Updated Row Data (15 Columns)
+            // --- RESTORED MISSING LINE BELOW ---
+            const eventStartTime = new Date(event.start.dateTime || event.start.date);
+            
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
                 suggestedSeLead, suggestedInPerson, suggestedTag, 
@@ -354,7 +352,6 @@ function findEventsMissingTag() {
             }
         }
         
-        // --- 6. Write Results ---
         const sheet = file.getSheetByName("Untagged Meetings");
         const lastRow = sheet.getLastRow();
         
@@ -378,7 +375,6 @@ function findEventsMissingTag() {
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
-        // --- 7. Formatting ---
         _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { filterForMissingSETags, showTaggedMeetings, externalFilter });
         
         updateTagDropdownsAndColors(true); 
