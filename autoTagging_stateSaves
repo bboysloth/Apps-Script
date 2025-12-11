@@ -1,9 +1,8 @@
 /**
  * @file Meeting Tagger Tool v2.8.1
- * @description Added LocationRequiresExternal Flag
- * * CHANGELOG v2.8.1:
- * 1. added LocationRequiresExternal Flag on config page to reduce 'In Person' suggestions when meeting is internal. 
- * ----- This removes matches for events like 333 or Verkada Sponsored Events which you may NOT want In Person to be suggested
+ * @description MAJOR UPDATE: DATA MIGRATION.
+ * 
+ * v2.8.1: add Admin menu option to initialize sheet
  * 
  * * CHANGELOG v2.8.0:
  * 1. MOVING DATA: All keyword lists (IgnorePhrases, AutoSELead, etc.) are now read from the "Filter Lists" sheet.
@@ -15,6 +14,7 @@
  * - Aggressive character cleaning to prevent "Bad Request" API errors
  * - Visual "Suggestion Borders" (Dark Blue)
  * - "Changes Detected" indicator on Tags sheet
+ * 
  * * @version 2.8.1
  */
 
@@ -34,6 +34,8 @@ function onOpen() {
       .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
       .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
       .addItem('Config: Save & Refresh', 'saveConfigAndRun')
+      .addSeparator()
+      .addItem('Admin: Initialize/Repair Sheets', 'initializeSheet') // NEW (v2.8.1)
       .addToUi();
 }
 // #endregion
@@ -1014,5 +1016,271 @@ function generateDashboard() {
   [1, 2, 3, 5, 6, 7].forEach(c => visualsSheet.setColumnWidth(c, 100));
   
   ss.setActiveSheet(visualsSheet);
+}
+// #endregion
+
+// =================================================================
+// #region 7. INITIALIZATION & SCAFFOLDING (v3.0.10)
+// =================================================================
+
+/**
+ * v3.0.10: Builds ALL system sheets.
+ * UPDATES: 
+ * - Removed blank spacer row at top of Tags sheet.
+ * - Logic Update: Checkboxes now appear on ANY row that has a Tag Name (Col C),
+ * fixing the missing checkboxes on the "*future use" row.
+ * - Recalculated all row indices for colors/headers to match the tighter layout.
+ */
+function initializeSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // --- 1. SHEET CREATION PHASE ---
+  let mainSheet = ss.getSheetByName("Untagged Meetings");
+  if (!mainSheet) { mainSheet = ss.insertSheet("Untagged Meetings"); }
+
+  let configSheet = ss.getSheetByName("Config");
+  if (!configSheet) { configSheet = ss.insertSheet("Config"); }
+  
+  let filterSheet = ss.getSheetByName("Filter Lists");
+  if (!filterSheet) { filterSheet = ss.insertSheet("Filter Lists"); }
+
+  let tagsSheet = ss.getSheetByName("Tags");
+  if (!tagsSheet) { tagsSheet = ss.insertSheet("Tags"); }
+
+  let visualsSheet = ss.getSheetByName("Visuals");
+  if (!visualsSheet) { visualsSheet = ss.insertSheet("Visuals"); }
+
+  // --- 2. ENFORCE TAB ORDER ---
+  ss.setActiveSheet(mainSheet); ss.moveActiveSheet(1);
+  ss.setActiveSheet(configSheet); ss.moveActiveSheet(2);
+  ss.setActiveSheet(filterSheet); ss.moveActiveSheet(3);
+  ss.setActiveSheet(tagsSheet); ss.moveActiveSheet(4);
+  ss.setActiveSheet(visualsSheet); ss.moveActiveSheet(5);
+
+  // --- 3. POPULATE 'CONFIG' SHEET ---
+  configSheet.clear(); 
+  
+  const configData = [
+    { key: "MinutesInterval", val: 30, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
+    { key: "QuarterOverride", val: "None", desc: "When selected, start/end dates align with Verkada's FY dates. API restricts edits to about 2 quarters in the past\n**Selecting 'None' allows you to to use 'DaysBack' and 'DaysAhead' logic", type: "quarter_dropdown" },
+    { key: "DaysBack", val: 30, desc: "How far back from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
+    { key: "DaysAhead", val: 1, desc: "How far ahead from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
+    
+    { key: "IgnorePhrases", val: true, desc: `CHECKED: Meetings are ignored if they CONTAIN words/phrases located in the IgnorePhrases Filter List.\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
+    { key: "IgnoreExactTitles", val: true, desc: `CHECKED: Exclude Event Titles found in the IgnoreExactTitles Filter List from results\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
+    { key: "IgnoreFromEmails", val: true, desc: `CHECKED: Ignore meetings from specific email addresses located in the IgnoreFromEmails Filter List\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
+    { key: "IgnoreToEmails", val: true, desc: `CHECKED: Ignore meetings sent to specific email addresses located in the IgnoreToEmails Filter List\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
+    
+    { key: "IncludeAllDayEvents", val: true, desc: "CHECKED : The script shows all-day events on the \"Untagged Meetings\" list (use with 'NightsAwayKeywords')\nUNCHECKED: The script ignores any all-day events.", type: "checkbox" },
+    { key: "NightsAwayKeywords", val: true, desc: `Used with 'IncludeAllDayEvents' filter for ACTUAL Travel Events. Manage keyword suggestions from the NightsAway Filter List`, type: "checkbox" },
+    
+    { key: "LocationSetsInPerson", val: true, desc: "CHECKED: Suggests an 'In Person' tag on any meeting containing a physical address/location\nUNCHECKED: Does NOT suggest an 'In Person' tag on meetings containing a location", type: "checkbox" },
+    { key: "LocationRequiresExternal", val: true, desc: "CHECKED: Location-based 'In Person' suggestions ONLY occur if an External Attendee is present (Filters out internal conference rooms).\nUNCHECKED: Any physical location triggers an 'In Person' suggestion.", type: "checkbox" },
+    
+    { key: "AutoInPersonKeywords", val: true, desc: `Scan the full title + description against your AutoInPersonKeywords Filter list. If it finds a match, it will check the 'In Person' checkbox as a suggested calendar event tag MODIFIER. Comma-delimited`, type: "checkbox" },
+    { key: "AutoSELeadKeywords", val: true, desc: `Scan the full title + description against your AutoSELeadKeywords Filter list. If it finds a match, it will check the 'SE Lead' checkbox as a suggested calendar event tag edit. Comma-delimited`, type: "checkbox" },
+    
+    { key: "FilterForMissingSETags", val: false, desc: "CHECKED: Show only meetings with no tag, and meetings that have an AE/SFDC implemented tags.\nUNCHECKED: HIDES meetings with any tag (AE/SFDC OR SE Tags)\n**Results will populate with YELLOW if the meeting is missing a ('SE') Tag, and RED if the meeting has NO Tags at all.", type: "checkbox" },
+    { key: "ShowTaggedMeetings", val: true, desc: "CHECKED: Displays all tagged meetings (with GREEN) allowing for editing past tagged events\noverrides 'FilterForMissingSETags' behavior to hide \"(SE)\" tagged meetings", type: "checkbox" },
+    { key: "ExternalAttendees", val: true, desc: "CHECKED: SHOWS only Meetings with External Attendees\nUNCHECKED: SHOWS Meetings with and without External Attendees (Internal Meetings)", type: "checkbox" },
+    
+    { key: "InPersonModifier", val: "-P", desc: "This modifier is added to a meeting type if you are In Person instead of joining Virtually.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
+    { key: "SELeadTagText", val: "Verkada SE Lead;", desc: "This denotes the text added to a meeting type if you lead the call.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
+    { key: "AttendanceFilter", val: "Show Only Accepted/Maybe", desc: "\"Show Only Accepted/Maybe\" = filter by attendance status: \"accepted\", \"tentative\" (Maybe), \"organizer\"\n\"Show All Meetings\" = All meetings are shown -- including declined meetings.", type: "attendance_dropdown" }
+  ];
+
+  configSheet.getRange("A1:C1").setValues([["Parameter / Filter", "Value", "Description"]])
+             .setFontWeight("bold").setBackground("#283e4d").setFontColor("white").setHorizontalAlignment("center");
+  configSheet.setFrozenRows(1);
+
+  const outputRows = configData.map(r => [r.key, r.val, r.desc]);
+  configSheet.getRange(2, 1, outputRows.length, 3).setValues(outputRows);
+
+  // --- CONFIG FORMATTING ---
+  configSheet.getRange("A:C").setFontFamily("Poppins");
+  configSheet.getRange("A:A").setFontWeight("bold");
+  configSheet.getRange("B:B").setFontWeight("bold").setWrap(true).setHorizontalAlignment("center").setVerticalAlignment("middle");
+  configSheet.getRange("C:C").setWrap(true);
+  
+  configSheet.setColumnWidth(1, 200);
+  configSheet.setColumnWidth(2, 150);
+  configSheet.setColumnWidth(3, 600);
+
+  for (let i = 0; i < configData.length; i++) {
+    const row = i + 2;
+    const cell = configSheet.getRange(row, 2);
+    const descCell = configSheet.getRange(row, 3);
+    const type = configData[i].type;
+
+    // Apply Colors
+    cell.setBackground("#a0d0e9"); 
+    descCell.setFontColor("#cc0000");
+
+    if (type === "checkbox") {
+      cell.insertCheckboxes();
+    } else if (type === "quarter_dropdown") {
+      let quarters = ["None"];
+      let today = new Date();
+      for (let q = 0; q < 5; q++) {
+        const fq = _getVerkadaFiscalQuarter(today);
+        let name = fq.name;
+        if (q === 0) name += " (Current)";
+        quarters.push(name);
+        const dates = _getDatesForVerkadaFQ(fq.fiscalYear, fq.quarter);
+        today = new Date(dates.start.getTime() - 1);
+      }
+      cell.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(quarters, true).build());
+    } else if (type === "attendance_dropdown") {
+      const options = ["Show Only Accepted/Maybe", "Show All Meetings"];
+      cell.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).build());
+    } else {
+      cell.clearDataValidations();
+    }
+  }
+  
+  const buttonRow = configData.length + 3;
+  configSheet.getRange(buttonRow, 2).setValue("Save Config and Refresh List")
+             .setBackground("#134f5c").setFontColor("white").setFontWeight("bold")
+             .setHorizontalAlignment("center")
+             .setBorder(true, true, true, true, false, false, "black", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+  
+  const instrStart = buttonRow + 2;
+  const instructions = [
+    ["INSTRUCTIONS: ⬇️"], [" "],
+    ["Creating an Untagged Meeting List:"],
+    ["- Click 'Save Config and Refresh List' (or use Menu > Meeting Tools > Refresh Untagged List)"],
+    ["- If you add keywords to 'Filter Lists', you must Refresh for them to take effect."],
+    ["TIP 1: Keep 'MinutesInterval' at 0 if you are planning to bulk edit."],
+    ["TIP 2: An automatic refresh will ERASE un-applied edits on the 'Untagged Meetings' page."],
+    [" "],
+    ["Submitting Calendar Tag Changes:"],
+    ["- Make edits to the 'Untagged Meetings' sheet."],
+    ["- Select 'Meeting Tools > Apply Changes to Calendar'."],
+    ["- Updates will show 'Synced: FALSE' until applied."],
+    ["TIP 1: Runtime limit is ~6 minutes."],
+    [" "],
+    ["Generating Visuals:"],
+    ["- Use 'Meeting Tools > Generate Dashboard'."],
+    ["- Visuals are read-only based on current list data."]
+  ];
+  
+  const instrRange = configSheet.getRange(instrStart, 1, instructions.length, 1);
+  instrRange.setValues(instructions);
+  
+  configSheet.getRange(instrStart, 1).setFontWeight("bold").setFontColor("#1155cc");
+  configSheet.getRange(instrStart + 2, 1).setFontWeight("bold").setFontColor("#134f5c");
+  configSheet.getRange(instrStart + 8, 1).setFontWeight("bold").setFontColor("#134f5c");
+  configSheet.getRange(instrStart + 14, 1).setFontWeight("bold").setFontColor("#134f5c");
+
+  // --- 4. POPULATE FILTER LISTS ---
+  const syncFormula = `=TRANSPOSE(QUERY(Config!A:A, "SELECT A WHERE A IS NOT NULL AND (A CONTAINS 'Keywords' OR A CONTAINS 'Ignore' OR A CONTAINS 'Location') AND A != 'AttendanceFilter' AND A != 'FilterForMissingSETags' AND A != 'LocationSetsInPerson' AND A != 'LocationRequiresExternal'", 0))`;
+  filterSheet.getRange("A1").setFormula(syncFormula);
+  filterSheet.getRange("1:1").setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
+             .setFontFamily("Poppins").setVerticalAlignment("middle");
+  filterSheet.setFrozenRows(1);
+
+  // --- 5. POPULATE TAGS SHEET ---
+  tagsSheet.clear(); 
+
+  const tagHeaders = [["Demofy Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag (For Calendar)", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "SAVED"]];
+  tagsSheet.getRange("B1:H1").setValues(tagHeaders)
+           .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
+           .setHorizontalAlignment("center").setVerticalAlignment("middle");
+  
+  // NOTE: Removed blank row at top. Indices shifted up by 1.
+  const tagsLayout = [
+    ["Sales Cycle", "", "", "", "", "", ""], 
+    ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", ""],
+    ["", "Demo (AE)", "DM;", "", "", "", ""],
+    ["", "Best Practice (AE)", "BP;", "", "", "", ""],
+    ["", "Project Scoping (AE)", "PS;", "", "", "", ""],
+    ["", "Site Walk (AE)", "SW;", "", "", "", ""],
+    ["", "Pricing Proposal / Proposal (AE)", "PN;", "", "", "", ""],
+    ["", "Executive Alignment / Board Meeting (AE)", "EX;", "", "", "", ""],
+    
+    ["Solutions Engineering", "", "", "", "", "", ""], 
+    ["", "Demo (SE)", "DM (SE);", "", "", "", ""],
+    ["", "Best Practice (SE)", "BP (SE);", "", "", "", ""],
+    ["", "Trial Setup/Config (SE)", "TC (SE);", "", "", "", ""],
+    ["", "Site Walk (SE)", "SW (SE);", "", "", "", ""],
+    ["", "Floorplans (SE)", "FP (SE);", "", "", "", ""],
+    ["", "VCE Training (SE)", "VT (SE);", "", "", "", ""],
+    ["", "Partner Onboarding / Training (SE)", "PT (SE);", "", "", "", ""],
+    ["", "Industry Conference / Trade Show (SE)", "TS (SE);", "", "", "", ""],
+    ["", "Verkada-Sponsored Event (SE)", "VM (SE);", "", "", "", ""],
+    ["", "Existing Customer Support (SE)", "SP (SE);", "", "", "", ""],
+    ["", "Existing Customer Check-In / CBR (SE)", "OC (SE);", "", "", "", ""],
+    ["", "AE Enablement (SE)", "AE (SE);", "", "", "", ""],
+    ["", "RFP / RFI / Security Questionnaire (SE)", "RQ (SE);", "", "", "", ""],
+    ["", "EBC (SE)", "EB (SE);", "", "", "", ""],
+
+    ["Partner", "", "", "", "", "", ""], 
+    ["", "Account Mapping (PARTNER)", "AM;", "", "", "", ""],
+    ["", "Deal Related Discussion (PARTNER)", "DR;", "", "", "", ""],
+    ["", "Partner Onboarding / Training (PARTNER)", "PT;", "", "", "", ""],
+    ["", "Channel Co-Marketing (PARTNER)", "CM;", "", "", "", ""],
+    ["", "Partner Demo Certification (PARTNER)", "DC;", "", "", "", ""],
+
+    ["Other", "", "", "", "", "", ""], 
+    ["", "Recruiting (OTHER)", "RT;", "", "", "", ""],
+    ["", "VCE Training (OTHER)", "VC;", "", "", "", ""],
+    ["", "Other (OTHER)", "OT;", "", "", "", ""],
+
+    ["Personal", "", "", "", "", "", ""], 
+    ["", "Enterprise Coverage", "ENT;", "", "", "", ""],
+    ["", "SE Coverage", "SUB (SE);", "", "", "", ""],
+    ["", "Viper Team", "VPR (SE);", "", "", "", ""],
+    ["", "Verkada Internal Team Discussions", "INT;", "", "", "", ""],
+    ["", "Travel Time", "TRVL (SE);", "", "", "", ""],
+    ["", "Overnight", "SLEEP (SE);", "", "", "", ""],
+    ["*future use", "Demo + SE Coverage", "DM (SE); SUB (SE);", "", "", "", ""]
+  ];
+
+  const dataRange = tagsSheet.getRange(2, 2, tagsLayout.length, 7);
+  dataRange.setValues(tagsLayout);
+  
+  // Base Formatting
+  dataRange.setFontColor("black").setBackground("white");
+
+  tagsSheet.getRange("A:Z").setFontFamily("Poppins").setVerticalAlignment("middle");
+  tagsSheet.setFrozenRows(1);
+  tagsSheet.setColumnWidth(2, 200); 
+  tagsSheet.setColumnWidth(3, 300); 
+  tagsSheet.setColumnWidth(5, 300); 
+  tagsSheet.setColumnWidth(6, 60); 
+  tagsSheet.setColumnWidth(7, 100); 
+
+  // Section Headers (Indices shifted -1 from previous)
+  const headerRows = [2, 10, 25, 31, 35];
+  headerRows.forEach(r => {
+      tagsSheet.getRange(r, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
+  });
+
+  // Apply Data Row Formatting (Loop Logic Changed)
+  // Checkboxes appear on ANY row with a Tag Name (Col C) populated.
+  for (let r = 2; r <= tagsLayout.length + 1; r++) {
+     let tagVal = tagsSheet.getRange(r, 3).getValue();
+     
+     if (tagVal !== "") {
+         // Apply Light Grey 1 to Inputs (E, F, G)
+         tagsSheet.getRange(r, 5, 1, 3).setBackground("#f3f3f3");
+         
+         tagsSheet.getRange(r, 6, 1, 2).insertCheckboxes();
+     }
+  }
+
+  // Personal Section Overrides (Indices shifted -1 from previous)
+  tagsSheet.getRange(36, 2, 4, 7).setBackground("#ff00ff"); // Magenta
+  tagsSheet.getRange(40, 2, 2, 7).setBackground("#00ffff"); // Cyan
+  tagsSheet.getRange(42, 2, 1, 7).setBackground("#ff9900"); // Orange
+
+  tagsSheet.getRange("H1").setValue("SAVED")
+           .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle");
+  
+  // --- 6. REFRESH TAGS SHEET ---
+  // Build the dropdowns immediately so the sheet is ready to use
+  updateTagDropdownsAndColors(true); // Silent mode
+
+  ss.toast("All sheets initialized successfully.");
 }
 // #endregion
