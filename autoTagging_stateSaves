@@ -43,10 +43,28 @@ function onOpen() {
 // =================================================================
 // #region 2. SCRIPT ENTRY POINTS
 // =================================================================
-function handleEdit(e) {
-  updateMeetingTag(e, true); 
+
+/**
+ * MASTER TRIGGER: Handles all simple edits.
+ * Routes traffic to the correct helper function based on the sheet name.
+ */
+function onEdit(e) {
+  const sheet = e.range.getSheet();
+  const name = sheet.getName();
+
+  if (name === "Untagged Meetings") {
+    // Handle coloring edits on the main list
+    updateMeetingTag(e, true); 
+  } 
+  else if (name === "Tags") {
+    // Handle "Changes Detected" flag on Tags sheet
+    onEditTagsSheet(e);
+  }
 }
 
+/**
+ * Menu action to apply batch changes.
+ */
 function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
@@ -254,13 +272,23 @@ function findEventsMissingTag() {
                 const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
                 if (tagLine) {
                     hasSETagInDescription = tagLine.includes("(SE)");
+                    
+                    // 1. Extract raw content (e.g. "SW-P (SE);")
                     let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
+                    
+                    // 2. Isolate the tag part (Stop at semicolon) -> "SW-P (SE)"
+                    // We add the semicolon back temporarily to ensure 'abbreviatedTag' matches standard format if needed elsewhere
                     let abbreviatedTag = rawContent.split(';')[0] + ';'; 
 
-                    if (modifier && rawContent.includes(modifier)) {
+                    // 3. Check for Modifier (-P)
+                    if (modifier && abbreviatedTag.includes(modifier)) {
                       originalInPerson = true;
                     }
-                    let lookupKey = abbreviatedTag; 
+                    
+                    // 4. CLEAN LOOKUP KEY: Remove Modifier AND Semicolon
+                    // "SW-P (SE);"  ->  "SW (SE)"
+                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim(); 
+                    
                     originalTag = tagMap.get(lookupKey) || "";
                 }
             }
@@ -802,7 +830,8 @@ function onEditTagsSheet(e) {
           flagCell.setValue("CHANGES DETECTED")
                   .setBackground("#f4cccc") 
                   .setFontWeight("bold")
-                  .setHorizontalAlignment("center");
+                  .setHorizontalAlignment("center")
+                  .setWrap(TRUE);
       }
     } catch (err) { }
   }
@@ -1020,16 +1049,18 @@ function generateDashboard() {
 // #endregion
 
 // =================================================================
-// #region 7. INITIALIZATION & SCAFFOLDING (v3.0.10)
+// #region 7. INITIALIZATION & SCAFFOLDING (v3.0.11)
 // =================================================================
 
 /**
- * v3.0.10: Builds ALL system sheets.
+ * v3.0.11: Builds ALL system sheets.
  * UPDATES: 
- * - Removed blank spacer row at top of Tags sheet.
- * - Logic Update: Checkboxes now appear on ANY row that has a Tag Name (Col C),
- * fixing the missing checkboxes on the "*future use" row.
- * - Recalculated all row indices for colors/headers to match the tighter layout.
+ * - Config: Removed "Save Config" button row.
+ * - Config: Added "INSTRUCTIONS: ⬇️" header at Row 23 (Dark Blue/White).
+ * - Config: Instructions text starts at Row 26.
+ * - Config: Col B (Values) = Blue BG (#a0d0e9), Bold, Centered, Middle.
+ * - Config: Col C (Descriptions) = Red Text (#cc0000).
+ * - Tags: Preserves all previous fixes (Checkbox logic, Personal colors).
  */
 function initializeSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1104,7 +1135,7 @@ function initializeSheet() {
   
   configSheet.setColumnWidth(1, 200);
   configSheet.setColumnWidth(2, 150);
-  configSheet.setColumnWidth(3, 600);
+  configSheet.setColumnWidth(3, 1200);
 
   for (let i = 0; i < configData.length; i++) {
     const row = i + 2;
@@ -1112,7 +1143,7 @@ function initializeSheet() {
     const descCell = configSheet.getRange(row, 3);
     const type = configData[i].type;
 
-    // Apply Colors
+    // Apply Colors: Col B Blue BG, Col C Red Text
     cell.setBackground("#a0d0e9"); 
     descCell.setFontColor("#cc0000");
 
@@ -1138,39 +1169,45 @@ function initializeSheet() {
     }
   }
   
-  const buttonRow = configData.length + 3;
-  configSheet.getRange(buttonRow, 2).setValue("Save Config and Refresh List")
-             .setBackground("#134f5c").setFontColor("white").setFontWeight("bold")
-             .setHorizontalAlignment("center")
-             .setBorder(true, true, true, true, false, false, "black", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+  // Note: Alternating row colors removed to support specific Blue BG requirement.
+
+  // --- CONFIG INSTRUCTIONS (Updated v3.0.11) ---
+  const instrHeaderRow = 23;
+  // Create Header Bar
+  configSheet.getRange(instrHeaderRow, 1).setValue("INSTRUCTIONS: ⬇️")
+             .setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
   
-  const instrStart = buttonRow + 2;
+  // Text starts at Row 26
+  const instrStartRow = 26;
   const instructions = [
-    ["INSTRUCTIONS: ⬇️"], [" "],
     ["Creating an Untagged Meeting List:"],
-    ["- Click 'Save Config and Refresh List' (or use Menu > Meeting Tools > Refresh Untagged List)"],
-    ["- If you add keywords to 'Filter Lists', you must Refresh for them to take effect."],
-    ["TIP 1: Keep 'MinutesInterval' at 0 if you are planning to bulk edit."],
-    ["TIP 2: An automatic refresh will ERASE un-applied edits on the 'Untagged Meetings' page."],
+    ["- Configure your desired settings and filters from the list above."],
+    ["- You can Update/Refresh your list via the 'Meeting Tools > Refresh Untagged List' Menu Dropdown."],
+    ["- If you add any keywords or terms to the 'Filter Lists' sheet, you will need to Refresh for those terms to be included."],
+    ["TIP 1: Keep 'MinutesInterval' at 0 (never auto-refresh) if you are planning to bulk edit calendar events"],
+    ["TIP 2: An automatic refresh (minutesInterval) will REFRESH your list and you will LOSE un-applied edits on the 'Untagged Meetings' page"],
     [" "],
-    ["Submitting Calendar Tag Changes:"],
-    ["- Make edits to the 'Untagged Meetings' sheet."],
-    ["- Select 'Meeting Tools > Apply Changes to Calendar'."],
-    ["- Updates will show 'Synced: FALSE' until applied."],
-    ["TIP 1: Runtime limit is ~6 minutes."],
+    ["Submitting Calendar Tag Changes to Your Calendar"],
+    ["- When you have made your edits to the 'Untagged Meetings' sheet:"],
+    ["------ Select 'Meeting Tools > Apply Changes to Calendar' to update your calendar events in bulk."],
+    ["- Updates to Event Tags (via autoTagged suggestions or manually) will show 'Synced: FALSE' if that change has not yet been saved to the event"],
+    ["TIP 1: App Scripts limit runtimes to 6 minutes - if timeouts occur due to meeting amount(s) see TIP 2"],
+    ["TIP 2: Reduce the amount of DaysBack, and/or set 'SE Tag Mode' & 'ShowTaggedMeetings' to FALSE to reduce query results"],
     [" "],
-    ["Generating Visuals:"],
-    ["- Use 'Meeting Tools > Generate Dashboard'."],
-    ["- Visuals are read-only based on current list data."]
+    ["Generating a Visuals Chart and Meeting Counts"],
+    ["- The 'Visuals' sheet is created based on what appears within a populated 'Untagged Meetings' List"],
+    ["- Create the Page using the 'Meeting Tools > Generate Dashboard' Menu Dropdown"],
+    ["- The creation of the Visuals sheet is meant to be manually run once the 'Untagged Meetings' sheet has been populated"]
   ];
   
-  const instrRange = configSheet.getRange(instrStart, 1, instructions.length, 1);
+  const instrRange = configSheet.getRange(instrStartRow, 1, instructions.length, 1);
   instrRange.setValues(instructions);
   
-  configSheet.getRange(instrStart, 1).setFontWeight("bold").setFontColor("#1155cc");
-  configSheet.getRange(instrStart + 2, 1).setFontWeight("bold").setFontColor("#134f5c");
-  configSheet.getRange(instrStart + 8, 1).setFontWeight("bold").setFontColor("#134f5c");
-  configSheet.getRange(instrStart + 14, 1).setFontWeight("bold").setFontColor("#134f5c");
+  // Apply Bold/Blue Color to Section Headers within instructions
+  const sectionHeaderIndices = [0, 7, 14]; // Index 0 is Row 26, Index 7 is Row 33, etc.
+  sectionHeaderIndices.forEach(idx => {
+      configSheet.getRange(instrStartRow + idx, 1).setFontWeight("bold").setFontColor("#1155cc"); // Blue styling
+  });
 
   // --- 4. POPULATE FILTER LISTS ---
   const syncFormula = `=TRANSPOSE(QUERY(Config!A:A, "SELECT A WHERE A IS NOT NULL AND (A CONTAINS 'Keywords' OR A CONTAINS 'Ignore' OR A CONTAINS 'Location') AND A != 'AttendanceFilter' AND A != 'FilterForMissingSETags' AND A != 'LocationSetsInPerson' AND A != 'LocationRequiresExternal'", 0))`;
@@ -1187,8 +1224,8 @@ function initializeSheet() {
            .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
            .setHorizontalAlignment("center").setVerticalAlignment("middle");
   
-  // NOTE: Removed blank row at top. Indices shifted up by 1.
-  const tagsLayout = [
+  // NOTE: Layout matches User Screenshot (Headers in B, Data in C)
+  const tagsLayout = [ 
     ["Sales Cycle", "", "", "", "", "", ""], 
     ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", ""],
     ["", "Demo (AE)", "DM;", "", "", "", ""],
@@ -1227,10 +1264,10 @@ function initializeSheet() {
     ["", "Other (OTHER)", "OT;", "", "", "", ""],
 
     ["Personal", "", "", "", "", "", ""], 
-    ["", "Enterprise Coverage", "ENT;", "", "", "", ""],
+    ["", "Enterprise Coverage", "ENT (SE);", "", "", "", ""],
     ["", "SE Coverage", "SUB (SE);", "", "", "", ""],
     ["", "Viper Team", "VPR (SE);", "", "", "", ""],
-    ["", "Verkada Internal Team Discussions", "INT;", "", "", "", ""],
+    ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", ""],
     ["", "Travel Time", "TRVL (SE);", "", "", "", ""],
     ["", "Overnight", "SLEEP (SE);", "", "", "", ""],
     ["*future use", "Demo + SE Coverage", "DM (SE); SUB (SE);", "", "", "", ""]
@@ -1250,17 +1287,17 @@ function initializeSheet() {
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
 
-  // Section Headers (Indices shifted -1 from previous)
-  const headerRows = [2, 10, 25, 31, 35];
+  const headerRows = [3, 11, 26, 32, 36];
   headerRows.forEach(r => {
       tagsSheet.getRange(r, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
   });
 
-  // Apply Data Row Formatting (Loop Logic Changed)
-  // Checkboxes appear on ANY row with a Tag Name (Col C) populated.
-  for (let r = 2; r <= tagsLayout.length + 1; r++) {
+  // Apply Data Row Formatting
+  for (let r = 4; r <= tagsLayout.length + 1; r++) {
+     let sectionVal = tagsSheet.getRange(r, 2).getValue();
      let tagVal = tagsSheet.getRange(r, 3).getValue();
      
+     // Check for Tag Value (Col C) to determine if it's a data row
      if (tagVal !== "") {
          // Apply Light Grey 1 to Inputs (E, F, G)
          tagsSheet.getRange(r, 5, 1, 3).setBackground("#f3f3f3");
@@ -1269,17 +1306,16 @@ function initializeSheet() {
      }
   }
 
-  // Personal Section Overrides (Indices shifted -1 from previous)
-  tagsSheet.getRange(36, 2, 4, 7).setBackground("#ff00ff"); // Magenta
-  tagsSheet.getRange(40, 2, 2, 7).setBackground("#00ffff"); // Cyan
-  tagsSheet.getRange(42, 2, 1, 7).setBackground("#ff9900"); // Orange
+  // Personal Section Overrides (Applied Last)
+  tagsSheet.getRange(37, 2, 4, 7).setBackground("#ff00ff");
+  tagsSheet.getRange(41, 2, 2, 7).setBackground("#00ffff");
+  tagsSheet.getRange(43, 2, 1, 7).setBackground("#ff9900");
 
   tagsSheet.getRange("H1").setValue("SAVED")
-           .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle");
+           .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
   
-  // --- 6. REFRESH TAGS SHEET ---
-  // Build the dropdowns immediately so the sheet is ready to use
-  updateTagDropdownsAndColors(true); // Silent mode
+  // Force dropdown build
+  updateTagDropdownsAndColors(true);
 
   ss.toast("All sheets initialized successfully.");
 }
