@@ -24,13 +24,13 @@
 function onOpen() {
   SpreadsheetApp.getUi()
       .createMenu('Meeting Tools')
-      .addItem('Refresh Untagged List', 'findEventsMissingTag')
+      .addItem('Save and Refresh Untagged List', 'findEventsMissingTag')
       .addSeparator()
       .addItem('Apply Changes to Calendar', 'applyBatchChanges')
       .addSeparator()
-      .addItem('Generate Dashboard', 'generateDashboard')
+      .addItem('Generate Visuals Dashboard', 'generateDashboard')
       .addSeparator()
-      .addItem('Config: Save & Refresh', 'saveConfigAndRun')
+      // .addItem('Config: Save & Refresh Untagged List', 'saveConfigAndRun')
       .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
       .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
       .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
@@ -69,14 +69,23 @@ function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
 
-function saveConfigAndRun() {
+/**
+ * PRIMARY REFRESH ACTION:
+ * 1. Saves Configuration (Updates Triggers based on MinutesInterval)
+ * 2. Refreshes the Untagged Meetings List
+ * * This consolidates "Save Config" and "Refresh List" into one safe action.
+ */
+function refreshUntaggedList() {
   try {
-    SpreadsheetApp.flush();
-    findEventsMissingTag();
+    SpreadsheetApp.flush(); // Ensure all user edits are saved before running
+
+    // 1. UPDATE TRIGGERS (The "Save Config" part)
+    // We do this every time to ensure the auto-refresh interval is always in sync.
     const file = SpreadsheetApp.getActiveSpreadsheet();
     const triggers = ScriptApp.getProjectTriggers();
     const minutes = parseInt(getConfig("MinutesInterval"), 10);
 
+    // Delete existing triggers for the refresher
     triggers.forEach(trigger => {
       const handler = trigger.getHandlerFunction();
       if (handler === 'findEventsMissingTag') {
@@ -84,19 +93,26 @@ function saveConfigAndRun() {
       }
     });
 
+    // Create new triggers if enabled
     if (minutes > 0) {
       ScriptApp.newTrigger('findEventsMissingTag').timeBased().everyMinutes(minutes).create();
     }
+    // Ensure onOpen trigger exists for convenience
     ScriptApp.newTrigger('findEventsMissingTag').forSpreadsheet(file).onOpen().create();
-    SpreadsheetApp.getActiveSpreadsheet().toast("Configuration saved and list refreshed.");
+
+    // 2. RUN THE LIST GENERATOR (The "Refresh" part)
+    findEventsMissingTag();
+    
+    SpreadsheetApp.getActiveSpreadsheet().toast("Config saved & list refreshed.");
+
   } catch (e) {
-    SpreadsheetApp.getUi().alert(e.message);
+    SpreadsheetApp.getUi().alert("Error during refresh: " + e.message);
   }
 }
 // #endregion
 
 // =================================================================
-// #region 3. CORE LOGIC FUNCTIONS
+// #region 3. CORE LOGIC FUNCTIONS (v3.2.0 - Multi-Tag Support)
 // =================================================================
 
 function findEventsMissingTag() {
@@ -145,7 +161,8 @@ function findEventsMissingTag() {
         const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
         
         const validTags = tagsData.filter(row => row[2] && row[2].trim() !== "");
-        const tagMap = new Map(validTags.map(row => [row[2].trim().replace(";", ""), row[1]])); 
+        // FIX: Global replace for semicolons to support keys like "DMSUB"
+        const tagMap = new Map(validTags.map(row => [row[2].replace(/;/g, "").trim(), row[1]])); 
         
         const keywordMap = new Map();
         validTags.forEach(row => {
@@ -280,12 +297,16 @@ function findEventsMissingTag() {
                 if (tagLine) {
                     hasSETagInDescription = tagLine.includes("(SE)");
                     let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
-                    let abbreviatedTag = rawContent.split(';')[0] + ';'; 
-
-                    if (modifier && rawContent.includes(modifier)) {
+                    
+                    // FIX: Read FULL content (don't split at first semicolon) to support multi-tags
+                    let fullTagString = rawContent; 
+                    
+                    if (modifier && fullTagString.includes(modifier)) {
                       originalInPerson = true;
                     }
-                    let lookupKey = abbreviatedTag.replace(modifier, "").replace(";", "").trim(); 
+                    
+                    // Clean lookup: Remove modifier (-P) and ALL semicolons
+                    let lookupKey = fullTagString.replace(modifier, "").replace(/;/g, "").trim();
                     originalTag = tagMap.get(lookupKey) || "";
                 }
             }
@@ -477,14 +498,13 @@ function updateMeetingTag(e, isSingleEditMode) {
           // 1. Surgical Removal (No HTML Parsing)
           // Use RegEx to remove known tags without touching other text
           description = description.replace(new RegExp(seLeadTag.trim(), 'gi'), '');
-          description = description.replace(new RegExp(tagPrefix + "[^;]+;", 'gi'), '');
+          // FIX: Updated regex to remove the entire tag line (including multiple semicolons)
+          description = description.replace(new RegExp(tagPrefix + ".*", 'gi'), '');
 
           // 2. Trim trailing whitespace/breaks
           description = description.trim();
 
           // 3. Smart Detection for Appending
-          // FIX: Don't count <http...> or <tel...> as HTML tags.
-          // This stops the script from seeing Teams invites as HTML and using <br> inappropriately.
           const isHtml = /<(?!(?:https?|tel):)[a-z][\s\S]*>/i.test(description);
           const breakChar = isHtml ? "<br>" : "\n";
 
@@ -500,14 +520,19 @@ function updateMeetingTag(e, isSingleEditMode) {
               continue; 
             }
             
+            // FIX: Multi-Tag Support for Modifiers
+            // Split by semicolon, apply modifier only to the first tag
             if (currentInPerson && abbreviatedTag) {
-              let suffix = abbreviatedTag.includes('(SE)') ? ' (SE)' : '';
-              if(suffix) abbreviatedTag = abbreviatedTag.replace('(SE)', '');
-              let coreTag = abbreviatedTag.replace(';', '').trim();
-              abbreviatedTag = `${coreTag}${modifier}${suffix};`;
+                let parts = abbreviatedTag.split(';').map(s => s.trim()).filter(s => s !== "");
+                if (parts.length > 0) {
+                    let first = parts[0];
+                    let suffix = first.includes('(SE)') ? ' (SE)' : '';
+                    let core = first.replace('(SE)', '').trim();
+                    parts[0] = `${core}${modifier}${suffix}`;
+                    abbreviatedTag = parts.join('; ') + ';';
+                }
             }
             
-            // Append with double break to ensure separation from previous text
             description += breakChar + breakChar + tagPrefix + abbreviatedTag;
           }
           
@@ -1157,7 +1182,7 @@ function initializeSheet() {
   configSheet.clear(); 
   
   const configData = [
-    { key: "MinutesInterval", val: 30, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
+    { key: "MinutesInterval", val: 0, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
     { key: "QuarterOverride", val: "None", desc: "When selected, start/end dates align with Verkada's FY dates. API restricts edits to about 2 quarters in the past\n**Selecting 'None' allows you to to use 'DaysBack' and 'DaysAhead' logic", type: "quarter_dropdown" },
     { key: "DaysBack", val: 30, desc: "How far back from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
     { key: "DaysAhead", val: 1, desc: "How far ahead from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
