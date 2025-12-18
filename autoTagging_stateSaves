@@ -1355,8 +1355,7 @@ function initializeSheet() {
            .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
            .setHorizontalAlignment("center").setVerticalAlignment("middle");
   
-  // UPDATED LAYOUT (v3.0.18): Added Defaults for Keywords and Title Checkboxes
-  // Col 0=Section, 1=Tag, 2=Abbr, 3=Keywords, 4=Titles(Bool), 5=Desc(Bool), 6=Status
+  // UPDATED LAYOUT (v3.2.3) - Added "Customer Success" Section
   const tagsLayout = [
     ["", "", "", "", "", "", ""], 
     ["Sales Cycle", "", "", "", "", "", ""], 
@@ -1368,10 +1367,14 @@ function initializeSheet() {
     ["", "Pricing Proposal / Proposal (AE)", "PN;", "", "", "", ""],
     ["", "Executive Alignment / Board Meeting (AE)", "EX;", "", "", "", ""],
     
+    ["Customer Success", "", "", "", "", "", ""], 
+    ["", "Existing Customer Check-In / CBR", "OC;", "", "", "", ""],
+    ["", "Existing Customer Support", "SP;", "", "", "", ""],
+
     ["Solutions Engineering", "", "", "", "", "", ""], 
     ["", "Demo (SE)", "DM (SE);", "demo", true, "", ""],
     ["", "Best Practice (SE)", "BP (SE);", "best practice", true, "", ""],
-    ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", ""], // No Checkbox Default
+    ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", ""],
     ["", "Site Walk (SE)", "SW (SE);", "sitewalk, site walk", true, "", ""],
     ["", "Floorplans (SE)", "FP (SE);", "floorplan", true, "", ""],
     ["", "VCE Training (SE)", "VT (SE);", "vce", true, "", ""],
@@ -1420,7 +1423,8 @@ function initializeSheet() {
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
 
-  const headerRows = [3, 11, 26, 32, 36];
+  // Updated Header Rows (Indices shifted due to added section)
+  const headerRows = [3, 11, 14, 29, 35,, 39];
   headerRows.forEach(r => {
       tagsSheet.getRange(r, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
   });
@@ -1436,16 +1440,17 @@ function initializeSheet() {
      }
   }
 
-  // --- COLUMN C COLOR CODING ---
+  // --- COLUMN C COLOR CODING (Indices shifted) ---
   tagsSheet.getRange(4, 3, 7, 1).setBackground("#efefef"); // Sales
-  tagsSheet.getRange(12, 3, 14, 1).setBackground("#d9ead3"); // SE
-  tagsSheet.getRange(27, 3, 5, 1).setBackground("#cfe2f3"); // Partner
-  tagsSheet.getRange(33, 3, 3, 1).setBackground("#fce5cd"); // Other
+  tagsSheet.getRange(12, 3, 2, 1).setBackground("#ead1dc"); // Customer Success (Light Purple)
+  tagsSheet.getRange(15, 3, 14, 1).setBackground("#d9ead3"); // SE
+  tagsSheet.getRange(30, 3, 5, 1).setBackground("#cfe2f3"); // Partner
+  tagsSheet.getRange(36, 3, 3, 1).setBackground("#fce5cd"); // Other
 
   // Personal Section
-  tagsSheet.getRange(37, 3, 4, 1).setBackground("#ff00ff");
-  tagsSheet.getRange(41, 3, 2, 1).setBackground("#00ffff");
-  tagsSheet.getRange(43, 3, 1, 1).setBackground("#ff9900");
+  tagsSheet.getRange(40, 3, 4, 1).setBackground("#ff00ff");
+  tagsSheet.getRange(44, 3, 2, 1).setBackground("#00ffff");
+  tagsSheet.getRange(46, 3, 1, 1).setBackground("#ff9900");
 
   tagsSheet.getRange("H1").setValue("SAVED")
            .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
