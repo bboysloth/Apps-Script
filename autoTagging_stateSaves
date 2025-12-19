@@ -112,7 +112,7 @@ function refreshUntaggedList() {
 // #endregion
 
 // =================================================================
-// #region 3. CORE LOGIC FUNCTIONS (v3.2.0 - Multi-Tag Support)
+// #region 3. CORE LOGIC FUNCTIONS (v3.4.1 - Fix Formatting/Clear)
 // =================================================================
 
 function findEventsMissingTag() {
@@ -124,12 +124,13 @@ function findEventsMissingTag() {
         const selectedQuarter = getConfig("QuarterOverride");
         const MAX_PATCH_DAYS_PAST = 180; 
 
-        // Lists (Raw Data)
+        // Lists
         const ignorePhrasesList = _getFilterList("IgnorePhrases");
         const ignoreExactList = _getFilterList("IgnoreExactTitles");
         const ignoreFromEmailsList = _getFilterList("IgnoreFromEmails").map(s => s.toLowerCase());
         const ignoreToEmailsList = _getFilterList("IgnoreToEmails").map(s => s.toLowerCase());
         const autoSeLeadList = _getFilterList("AutoSELeadKeywords").map(s => s.toLowerCase());
+        const autoSeCoverList = _getFilterList("AutoSECoverageKeywords").map(s => s.toLowerCase()); 
         const autoInPersonList = _getFilterList("AutoInPersonKeywords").map(s => s.toLowerCase());
         const nightsAwayList = _getFilterList("NightsAwayKeywords").map(s => s.toLowerCase());
 
@@ -139,6 +140,7 @@ function findEventsMissingTag() {
         const useIgnoreFrom = (getConfig("IgnoreFromEmails") || "false").toString().toLowerCase() === "true";
         const useIgnoreTo = (getConfig("IgnoreToEmails") || "false").toString().toLowerCase() === "true";
         const useAutoSeLead = (getConfig("AutoSELeadKeywords") || "false").toString().toLowerCase() === "true";
+        const useAutoSeCover = (getConfig("AutoSECoverageKeywords") || "false").toString().toLowerCase() === "true"; 
         const useAutoInPerson = (getConfig("AutoInPersonKeywords") || "false").toString().toLowerCase() === "true";
 
         // Settings
@@ -151,6 +153,7 @@ function findEventsMissingTag() {
         
         const modifier = getConfig("InPersonModifier");
         const seLeadTagText = getConfig("SELeadTagText");
+        const seCoverTagText = getConfig("SECoverageTagText");
         const tagPrefix = "Verkada Meeting Tag: ";
         const attendanceFilter = getConfig("AttendanceFilter");
         
@@ -161,7 +164,6 @@ function findEventsMissingTag() {
         const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
         
         const validTags = tagsData.filter(row => row[2] && row[2].trim() !== "");
-        // FIX: Global replace for semicolons to support keys like "DMSUB"
         const tagMap = new Map(validTags.map(row => [row[2].replace(/;/g, "").trim(), row[1]])); 
         
         const keywordMap = new Map();
@@ -228,7 +230,6 @@ function findEventsMissingTag() {
 
             if (event.start.date) {
                 if (!includeAllDayEvents) continue; 
-                
                 const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
                 const allDaySearchText = (event.summary + ' ' + (event.description || "")).toLowerCase();
                 const hasNightsKeyword = nightsAwayList.some(k => allDaySearchText.includes(k));
@@ -277,7 +278,6 @@ function findEventsMissingTag() {
             }
             
             // --- DESCRIPTION PARSING (Read-Only) ---
-            // Removes HTML tags for searching, but leaves <http> and <tel> alone.
             let description = (event.description || "")
                 .replace(/<br\s*\/?>/gi, '\n')
                 .replace(/<p>/gi, '\n')
@@ -286,7 +286,9 @@ function findEventsMissingTag() {
 
             const hasMainTag = description.includes(tagPrefix);
             
+            // Check Tags
             let originalSeLead = seLeadTagText ? description.includes(seLeadTagText) : false;
+            let originalSeCover = seCoverTagText ? description.includes(seCoverTagText) : false;
             let originalInPerson = false;
             let originalTag = "";
             let hasSETagInDescription = false;
@@ -297,32 +299,26 @@ function findEventsMissingTag() {
                 if (tagLine) {
                     hasSETagInDescription = tagLine.includes("(SE)");
                     let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
-                    
-                    // FIX: Read FULL content (don't split at first semicolon) to support multi-tags
                     let fullTagString = rawContent; 
                     
                     if (modifier && fullTagString.includes(modifier)) {
                       originalInPerson = true;
                     }
-                    
-                    // Clean lookup: Remove modifier (-P) and ALL semicolons
                     let lookupKey = fullTagString.replace(modifier, "").replace(/;/g, "").trim();
                     originalTag = tagMap.get(lookupKey) || "";
                 }
             }
             
             let suggestedSeLead = originalSeLead;
+            let suggestedSeCover = originalSeCover; 
             let suggestedInPerson = originalInPerson;
             let suggestedTag = originalTag;
 
-            // --- LOCATION LOGIC ---
             if (locationFilterEnabled && event.location) {
                 const locationLower = event.location.toLowerCase();
                 const isVirtual = virtualExclusions.some(keyword => locationLower.includes(keyword));
-                
                 if (!isVirtual && locationLower.trim() !== "") {
                     if (locationRequiresExternal && !hasExternalAttendee) {
-                        // Internal meeting -> Do NOT suggest In Person
                     } else {
                         suggestedInPerson = true;
                     }
@@ -363,6 +359,14 @@ function findEventsMissingTag() {
                     }
                 }
             }
+            if (useAutoSeCover) {
+                for (const keyword of autoSeCoverList) {
+                    if (fullSearchText.includes(keyword)) {
+                        suggestedSeCover = true;
+                        break; 
+                    }
+                }
+            }
             
             if (suggestedTag && useAutoInPerson) {
                 for (const keyword of autoInPersonList) {
@@ -376,11 +380,11 @@ function findEventsMissingTag() {
             const eventStartTime = new Date(event.start.dateTime || event.start.date);
             const rowData = [
                 title, eventStartTime, organizerEmail, hasExternalAttendee, 
-                suggestedSeLead, suggestedInPerson, suggestedTag, 
+                suggestedSeCover, suggestedSeLead, suggestedInPerson, suggestedTag, 
                 '', 
                 `=HYPERLINK("${event.htmlLink}", "Open Event")`, 
                 '', 
-                originalSeLead, originalInPerson, originalTag,
+                originalSeCover, originalSeLead, originalInPerson, originalTag,
                 durationInMinutes, 
                 nightsCount 
             ];
@@ -400,12 +404,15 @@ function findEventsMissingTag() {
         const sheet = file.getSheetByName("Untagged Meetings");
         const lastRow = sheet.getLastRow();
         
+        // FIX: Deep Clear to remove persistent "Header Style" from data rows
         if (lastRow > 0) {
-             sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).clearContent().setBackground(null).setFontLine(null);
-             sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).setBorder(false, false, false, false, false, false, false, null);
+             const range = sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns());
+             range.clearContent();
+             range.clearFormat(); // This wipes Bold/Colors
+             range.setWrap(false); // Reset wrap
         }
         
-        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
+        const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Cover", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original Cover", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
         sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
         
         const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
@@ -414,9 +421,9 @@ function findEventsMissingTag() {
             const numRows = finalList.length;
             const formulas = [];
             for (let i = 2; i <= numRows + 1; i++) {
-                 formulas.push([`=AND(E${i}=K${i}, F${i}=L${i}, G${i}=M${i})`]);
+                 formulas.push([`=AND(E${i}=L${i}, F${i}=M${i}, G${i}=N${i}, H${i}=O${i})`]);
             }
-            sheet.getRange(2, 8, numRows, 1).setFormulas(formulas);
+            sheet.getRange(2, 9, numRows, 1).setFormulas(formulas);
         }
         else { sheet.getRange("A2").setValue("No meetings found using your current criteria."); }
         
@@ -443,6 +450,7 @@ function updateMeetingTag(e, isSingleEditMode) {
     ss.toast("Processing batch... Please wait.");
     const tagPrefix = "Verkada Meeting Tag: ";
     const seLeadTag = getConfig("SELeadTagText");
+    const seCoverTag = getConfig("SECoverageTagText"); 
     const modifier = getConfig("InPersonModifier");
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) { ss.toast("No data to process."); return; }
@@ -452,7 +460,7 @@ function updateMeetingTag(e, isSingleEditMode) {
     const validTags = tagsRaw.filter(row => row[2] && row[2].trim() !== "");
     const tagMap = new Map(validTags.map(row => [row[1], row[2]])); 
 
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 15).getValues(); 
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 17).getValues(); 
     const calendarId = CalendarApp.getDefaultCalendar().getId();
     
     const eventTimes = sheetData.map(row => new Date(row[1]).getTime()).filter(t => !isNaN(t));
@@ -477,14 +485,16 @@ function updateMeetingTag(e, isSingleEditMode) {
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
-      const currentSeLead = rowData[4];
-      const currentInPerson = rowData[5];
-      const currentTag = rowData[6];
-      const originalSeLead = rowData[10];
-      const originalInPerson = rowData[11];
-      const originalTag = rowData[12];
+      const currentSeCover = rowData[4]; 
+      const currentSeLead = rowData[5];
+      const currentInPerson = rowData[6];
+      const currentTag = rowData[7];
+      const originalSeCover = rowData[11];
+      const originalSeLead = rowData[12];
+      const originalInPerson = rowData[13];
+      const originalTag = rowData[14];
 
-      const hasChanged = (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
+      const hasChanged = (currentSeCover !== originalSeCover) || (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
 
       if (hasChanged) {
         const title = rowData[0];
@@ -495,22 +505,21 @@ function updateMeetingTag(e, isSingleEditMode) {
         if (eventToUpdate) {
           let description = eventToUpdate.description || "";
 
-          // 1. Surgical Removal (No HTML Parsing)
-          // Use RegEx to remove known tags without touching other text
+          // 1. Surgical Removal
           description = description.replace(new RegExp(seLeadTag.trim(), 'gi'), '');
-          // FIX: Updated regex to remove the entire tag line (including multiple semicolons)
+          description = description.replace(new RegExp(seCoverTag.trim(), 'gi'), '');
           description = description.replace(new RegExp(tagPrefix + ".*", 'gi'), '');
 
-          // 2. Trim trailing whitespace/breaks
           description = description.trim();
 
-          // 3. Smart Detection for Appending
           const isHtml = /<(?!(?:https?|tel):)[a-z][\s\S]*>/i.test(description);
           const breakChar = isHtml ? "<br>" : "\n";
 
-          // 4. Append New Tags (with double break for spacing)
           if (currentSeLead) {
              description += breakChar + breakChar + seLeadTag;
+          }
+          if (currentSeCover) {
+             description += breakChar + seCoverTag; 
           }
           
           if (currentTag && currentTag.trim() !== "" && currentTag !== "<Clear Tag>") {
@@ -520,8 +529,6 @@ function updateMeetingTag(e, isSingleEditMode) {
               continue; 
             }
             
-            // FIX: Multi-Tag Support for Modifiers
-            // Split by semicolon, apply modifier only to the first tag
             if (currentInPerson && abbreviatedTag) {
                 let parts = abbreviatedTag.split(';').map(s => s.trim()).filter(s => s !== "");
                 if (parts.length > 0) {
@@ -532,7 +539,6 @@ function updateMeetingTag(e, isSingleEditMode) {
                     abbreviatedTag = parts.join('; ') + ';';
                 }
             }
-            
             description += breakChar + breakChar + tagPrefix + abbreviatedTag;
           }
           
@@ -560,15 +566,18 @@ function updateMeetingTag(e, isSingleEditMode) {
 // #endregion
 
 // =================================================================
-// #region 4. HELPER & UTILITY FUNCTIONS
+// #region 4. HELPER & UTILITY FUNCTIONS (v3.4.1 - Fix Formatting)
 // =================================================================
 
 function getConfig(label) {
-  const configSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Config");
-  if (!configSheet) throw new Error("The 'Config' sheet could not be found.");
-  const finder = configSheet.createTextFinder(label).matchEntireCell(true).findNext();
-  if (!finder) throw new Error(`Config label "${label}" not found in 'Config' sheet.`);
-  return finder.offset(0, 1).getValue();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Config");
+  if (!sheet) return null;
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === label) return data[i][1];
+  }
+  return null;
 }
 
 function _formatMinutesToHours(totalMinutes) {
@@ -581,100 +590,114 @@ function _formatMinutesToHours(totalMinutes) {
   return result.trim();
 }
 
-/**
- * NEW (v2.8.0): Reads list data from the dedicated "Filter Lists" sheet.
- * Finds the column matching listName and returns all non-blank, RAW values.
- */
 function _getFilterList(listName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const listSheet = ss.getSheetByName("Filter Lists");
   if (!listSheet) return []; 
-
   const headers = listSheet.getRange('A1:1').getValues()[0];
   const colIndex = headers.findIndex(h => h && h.toString().trim() === listName);
-
   if (colIndex === -1) return []; 
-
   const columnData = listSheet.getRange(2, colIndex + 1, listSheet.getLastRow() - 1, 1).getValues();
-  return columnData.flat()
-    .filter(String)
-    .map(value => value.toString().trim());
+  return columnData.flat().filter(String).map(value => value.toString().trim());
 }
 
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
     sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setFontFamily('Poppins').setFontSize(11);
-    sheet.getRange(1, 1, 1, headers.length).setBackground("#283e4d").setFontColor("white");
+    
+    // Header Style
+    sheet.getRange(1, 1, 1, headers.length)
+         .setFontWeight("bold")
+         .setFontFamily('Poppins')
+         .setFontSize(11)
+         .setBackground("#283e4d")
+         .setFontColor("white")
+         .setVerticalAlignment("middle")
+         .setHorizontalAlignment("center")
+         .setWrap(true); 
     
     const lastRow = sheet.getLastRow();
     const startRow = 2;
     if (lastRow > 1) {
-        sheet.getRange(startRow, 2, lastRow - 1, 1).setNumberFormat("yyyy-mm-dd hh:mm AM/PM").setHorizontalAlignment("left");
-        sheet.getRange(startRow, 1, lastRow - 1, headers.length).setFontFamily('Poppins').setFontSize(10);
-        const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
-        sheet.getRange(startRow, 4, lastRow - 1, 1).setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
+        // FIX: Force BLACK Text and NORMAL Weight on Data Rows to fix white-text bug
+        const dataRange = sheet.getRange(startRow, 1, lastRow - 1, headers.length);
+        dataRange.setFontFamily('Poppins')
+                 .setFontSize(10)
+                 .setFontColor("black") 
+                 .setFontWeight("normal") 
+                 .setVerticalAlignment("middle");
+
+        // Date Column
+        sheet.getRange(startRow, 2, lastRow - 1, 1)
+             .setNumberFormat("yyyy-mm-dd hh:mm AM/PM")
+             .setHorizontalAlignment("left");
         
-        // --- ONE CHANGE: Force Checkboxes for SE Lead (Col 5) & In Person (Col 6) ---
-        sheet.getRange(startRow, 5, lastRow - 1, 2).insertCheckboxes();
+        // External Attendees
+        const extValues = sheet.getRange(startRow, 4, lastRow - 1, 1).getValues();
+        sheet.getRange(startRow, 4, lastRow - 1, 1)
+             .setBackgrounds(extValues.map(([val]) => val === true ? ['#d9ead3'] : ['#f4cccc']));
+        
+        // CHECKBOXES: Columns 5, 6, 7
+        sheet.getRange(startRow, 5, lastRow - 1, 3).insertCheckboxes();
     }
     
-    sheet.getRange("J1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
-    sheet.setColumnWidth(3, 230);
-    sheet.setColumnWidth(10, 300);
-    sheet.hideColumns(11, 5); // NEW: Hide K, L, M, N, O
+    sheet.getRange("K1").setValue(`Last Refreshed: ${new Date().toLocaleString()}`);
+
+    // SET COLUMN WIDTHS FOR UNTAGGED MEETING HEADERS/COLUMNS
+    sheet.setColumnWidth(1, 400); // A
+    sheet.setColumnWidth(2, 150); // B
+    sheet.setColumnWidth(3, 230); // C
+    sheet.setColumnWidth(4, 150); // D 
+    sheet.setColumnWidth(5, 80);  // E
+    sheet.setColumnWidth(6, 80);  // F
+    sheet.setColumnWidth(7, 80);  // G
+    sheet.setColumnWidth(8, 300); // H
+    sheet.setColumnWidth(9, 65);  // I
+    sheet.setColumnWidth(10, 100); // J
     
+    // Hide Metadata
+    sheet.hideColumns(12, 6); 
+    
+    // Row Colors
     if (configs.showTaggedMeetings) {
-        if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        }
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
     } else if (configs.filterForMissingSETags) {
-        if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        }
-        if (aeTaggedMeetings.length > 0) {
-            sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
-        }
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
+        if (aeTaggedMeetings.length > 0) sheet.getRange(startRow + noTagMeetings.length, 1, aeTaggedMeetings.length, 3).setBackground('#fff2cc');
     } else {
-        if (noTagMeetings.length > 0) {
-            sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
-        }
+        if (noTagMeetings.length > 0) sheet.getRange(startRow, 1, noTagMeetings.length, 3).setBackground('#f4cccc');
     }
     
     if (fullyTaggedMeetings.length > 0) {
         const offset = noTagMeetings.length + aeTaggedMeetings.length;
-        // FIX: Apply Light Green 3 background to A:C instead of strikethrough
         sheet.getRange(startRow + offset, 1, fullyTaggedMeetings.length, 3).setBackground('#d9ead3');
     }
-    // --- NEW (v2.7.12.1): Apply Suggestion Borders ---
+
     const SUGGESTION_COLOR = "#283e4d"; 
     const BORDER_STYLE = SpreadsheetApp.BorderStyle.SOLID_MEDIUM;
 
     if (lastRow > 1) {
-        const checkRange = sheet.getRange(startRow, 5, lastRow - 1, 9).getValues(); 
+        const checkRange = sheet.getRange(startRow, 5, lastRow - 1, 11).getValues(); 
         for (let i = 0; i < checkRange.length; i++) {
             const row = checkRange[i];
             const visibleRow = i + startRow;
-            const suggestedSE = row[0]; 
-            const suggestedIP = row[1]; 
-            const suggestedTag = row[2]; 
-            const originalSE = row[6];  
-            const originalIP = row[7];  
-            const originalTag = row[8]; 
+            const suggCover = row[0];
+            const suggSE    = row[1];
+            const suggIP    = row[2];
+            const suggTag   = row[3];
+            const origCover = row[7]; 
+            const origSE    = row[8]; 
+            const origIP    = row[9]; 
+            const origTag   = row[10];
             
-            if (suggestedSE !== originalSE && suggestedSE) {
-                sheet.getRange(visibleRow, 5).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
-            }
-            if (suggestedIP !== originalIP && suggestedIP) {
-                sheet.getRange(visibleRow, 6).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
-            }
-            if (suggestedTag !== originalTag && suggestedTag) {
-                sheet.getRange(visibleRow, 7).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
-            }
+            if (suggCover !== origCover && suggCover === true) sheet.getRange(visibleRow, 5).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            if (suggSE !== origSE && suggSE === true) sheet.getRange(visibleRow, 6).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            if (suggIP !== origIP && suggIP === true) sheet.getRange(visibleRow, 7).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
+            if (suggTag !== origTag && suggTag && suggTag !== "") sheet.getRange(visibleRow, 8).setBorder(true, true, true, true, false, false, SUGGESTION_COLOR, BORDER_STYLE);
         }
     }
 }
 
-// --- REQUIRED DEPENDENCIES (Needed for Region 3 and 7 to work) ---
+// --- REQUIRED DEPENDENCIES ---
 
 function _getVerkadaFiscalQuarter(date) {
   const month = date.getMonth(); 
@@ -730,11 +753,11 @@ function updateTagDropdownsAndColors(silentMode = false) {
   const lastMainRow = mainSheet.getLastRow();
   if (lastMainRow > 1) {
       const rule = SpreadsheetApp.newDataValidation().requireValueInList(dropdownList, true).build();
-      mainSheet.getRange(2, 7, lastMainRow - 1, 1).setDataValidation(rule);
+      mainSheet.getRange(2, 8, lastMainRow - 1, 1).setDataValidation(rule);
       const rules = mainSheet.getConditionalFormatRules();
       const newRules = rules.filter(r => {
           const ranges = r.getRanges();
-          return !ranges.some(rng => rng.getColumn() === 7);
+          return !ranges.some(rng => rng.getColumn() === 8);
       });
       const colorMap = {};
       for (let i = 1; i < dropdownList.length; i++) { 
@@ -745,11 +768,11 @@ function updateTagDropdownsAndColors(silentMode = false) {
       }
       for (const [hex, tags] of Object.entries(colorMap)) {
           const escapedTags = tags.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-          const formula = `=REGEXMATCH(G2, "^(${escapedTags})$")`;
+          const formula = `=REGEXMATCH(H2, "^(${escapedTags})$")`; 
           const cfRule = SpreadsheetApp.newConditionalFormatRule()
               .whenFormulaSatisfied(formula)
               .setBackground(hex)
-              .setRanges([mainSheet.getRange("G2:G")])
+              .setRanges([mainSheet.getRange("H2:H")]) 
               .build();
           newRules.push(cfRule);
       }
@@ -759,8 +782,9 @@ function updateTagDropdownsAndColors(silentMode = false) {
 }
 // #endregion
 
+
 // =================================================================
-// #region 5. DYNAMIC QUARTER, ADMIN & VISUALS FUNCTIONS
+// #region 5. DYNAMIC QUARTER & ADMIN FUNCTIONS (v3.4.1)
 // =================================================================
 
 function _getDatesForVerkadaFQ(fiscalYear, quarter) {
@@ -813,16 +837,20 @@ function updateQuarterDropdown() {
   ss.toast("Quarter dropdown updated.");
 }
 
+/**
+ * UPDATED (v3.4.1): Now targets Column H (Index 8) for dropdowns.
+ */
 function updateTagDropdownsAndColors(silentMode = false) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheetByName("Untagged Meetings");
-    if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
+    if (!tagsSheet || !mainSheet) { if(!silentMode) ss.toast("Error: Sheets not found."); return; }
     if (!silentMode) {
       ss.toast("Updating tag dropdowns and colors...");
     }
 
     const lastTagRow = tagsSheet.getLastRow();
+    // Read Tag Name (Col C) and Colors
     const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
     const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
     
@@ -836,7 +864,8 @@ function updateTagDropdownsAndColors(silentMode = false) {
         }
     }
 
-    const dropdownRange = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
+    // FIX: Target Column 8 (H)
+    const dropdownRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     dropdownRange.clearDataValidations();
 
     const helperSheetName = "_TagListHelper";
@@ -853,7 +882,8 @@ function updateTagDropdownsAndColors(silentMode = false) {
     mainSheet.clearConditionalFormatRules();
     let rules = [];
     
-    const dropdownRangeForRules = mainSheet.getRange(2, 7, mainSheet.getMaxRows() - 1, 1);
+    // FIX: Target Column 8 (H) for Rules
+    const dropdownRangeForRules = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     tagNames.forEach((nameArr, i) => {
         if (nameArr[0] === "<Clear Tag>") {
           rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("<Clear Tag>").setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
@@ -862,7 +892,8 @@ function updateTagDropdownsAndColors(silentMode = false) {
         }
     });
 
-    const syncedRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
+    // Synced Status is now Column 9 (I)
+    const syncedRange = mainSheet.getRange(2, 9, mainSheet.getMaxRows() - 1, 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
     
@@ -925,11 +956,12 @@ function onEditTagsSheet(e) {
                   .setBackground("#f4cccc") 
                   .setFontWeight("bold")
                   .setHorizontalAlignment("center")
-                  .setWrap(TRUE);
+                  .setWrap(true);
       }
     } catch (err) { }
   }
 }
+// #endregion
 
 // =================================================================
 // #region 6. VISUALS DASHBOARD FUNCTIONS
@@ -1143,14 +1175,14 @@ function generateDashboard() {
 // #endregion
 
 // =================================================================
-// #region 7. INITIALIZATION & SCAFFOLDING (v3.0.18)
+// #region 7. INITIALIZATION & SCAFFOLDING (v3.3.3)
 // =================================================================
 
 /**
- * v3.0.18: Builds ALL system sheets.
+ * v3.3.3: Builds ALL system sheets.
  * UPDATES: 
- * - Filter Lists: Added user-defined default keywords (hotel, sitewalk, etc.).
- * - Tags Sheet: Added user-defined keywords and set default Checkbox states (TRUE) for specific rows.
+ * - FIX: Made Instruction start row DYNAMIC based on configData length.
+ * (Previously static row 23 was overwriting new config parameters).
  */
 function initializeSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1182,7 +1214,7 @@ function initializeSheet() {
   configSheet.clear(); 
   
   const configData = [
-    { key: "MinutesInterval", val: 0, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
+    { key: "MinutesInterval", val: 30, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
     { key: "QuarterOverride", val: "None", desc: "When selected, start/end dates align with Verkada's FY dates. API restricts edits to about 2 quarters in the past\n**Selecting 'None' allows you to to use 'DaysBack' and 'DaysAhead' logic", type: "quarter_dropdown" },
     { key: "DaysBack", val: 30, desc: "How far back from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
     { key: "DaysAhead", val: 1, desc: "How far ahead from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
@@ -1200,13 +1232,15 @@ function initializeSheet() {
     
     { key: "AutoInPersonKeywords", val: true, desc: `Scan the full title + description against your AutoInPersonKeywords Filter list. If it finds a match, it will check the 'In Person' checkbox as a suggested calendar event tag MODIFIER. Comma-delimited`, type: "checkbox" },
     { key: "AutoSELeadKeywords", val: true, desc: `Scan the full title + description against your AutoSELeadKeywords Filter list. If it finds a match, it will check the 'SE Lead' checkbox as a suggested calendar event tag edit. Comma-delimited`, type: "checkbox" },
+    { key: "AutoSECoverageKeywords", val: true, desc: `Scan the full title + description against your AutoSECoverageKeywords Filter list. If it finds a match, it will check the 'SE Cover' checkbox as a suggested calendar event tag edit. Comma-delimited`, type: "checkbox" }, 
     
     { key: "FilterForMissingSETags", val: false, desc: "CHECKED: Show only meetings with no tag, and meetings that have an AE/SFDC implemented tags.\nUNCHECKED: HIDES meetings with any tag (AE/SFDC OR SE Tags)\n**Results will populate with YELLOW if the meeting is missing a ('SE') Tag, and RED if the meeting has NO Tags at all.", type: "checkbox" },
-    { key: "ShowTaggedMeetings", val: true, desc: "CHECKED: Displays all tagged meetings (with GREEN) allowing for editing past tagged events\nOVERRIDES 'FilterForMissingSETags' behavior to hide \"(SE)\" tagged meetings", type: "checkbox" },
+    { key: "ShowTaggedMeetings", val: true, desc: "CHECKED: Displays all tagged meetings (with GREEN) allowing for editing past tagged events\noverrides 'FilterForMissingSETags' behavior to hide \"(SE)\" tagged meetings", type: "checkbox" },
     { key: "ExternalAttendees", val: true, desc: "CHECKED: SHOWS only Meetings with External Attendees\nUNCHECKED: SHOWS Meetings with and without External Attendees (Internal Meetings)", type: "checkbox" },
     
     { key: "InPersonModifier", val: "-P", desc: "This modifier is added to a meeting type if you are In Person instead of joining Virtually.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
     { key: "SELeadTagText", val: "Verkada SE Lead;", desc: "This denotes the text added to a meeting type if you lead the call.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
+    { key: "SECoverageTagText", val: "Verkada SE Coverage;", desc: "Text added to description when 'SE Cover' is checked.", type: "text" },
     { key: "AttendanceFilter", val: "Show Only Accepted/Maybe", desc: "\"Show Only Accepted/Maybe\" = filter by attendance status: \"accepted\", \"tentative\" (Maybe), \"organizer\"\n\"Show All Meetings\" = All meetings are shown -- including declined meetings.", type: "attendance_dropdown" }
   ];
 
@@ -1226,7 +1260,7 @@ function initializeSheet() {
   
   configSheet.setColumnWidth(1, 200);
   configSheet.setColumnWidth(2, 150);
-  configSheet.setColumnWidth(3, 900);
+  configSheet.setColumnWidth(3, 1200);
   configSheet.setColumnWidth(4, 30);  
 
   for (let i = 0; i < configData.length; i++) {
@@ -1262,45 +1296,42 @@ function initializeSheet() {
   }
   
   // --- CONFIG INSTRUCTIONS ---
-  const instrHeaderRow = 25;
+  // FIX: Make this dynamic. Start 2 rows after data ends.
+  const instrHeaderRow = outputRows.length + 3; 
   configSheet.getRange(instrHeaderRow, 1).setValue("INSTRUCTIONS: ⬇️")
              .setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
   
-  const instrStartRow = 26;
+  const instrStartRow = instrHeaderRow + 3;
   const instructions = [
-    ["1. Setup Filters and Select Parameters used in your 'Untagged Meeting' List:"],
-    ["-- Configure your desired settings and enable filters from the list above."],
-    ["-- Add keywords for auto-tag suggestions on the 'Filter Lists' Sheet and the 'Tags' Sheet"],
-    ["---- Added keywords to the 'Filter Lists' sheet, will require that you select 'Save and Refresh' for those terms to be included."],
-    ["-- If no parameters have changed, you can Refresh your meeting list via the 'Meeting Tools > Refresh Untagged List' Menu Dropdown."],
+    ["Creating an Untagged Meeting List:"],
+    ["- Configure your desired settings and filters from the list above."],
+    ["- You can Update/Refresh your list via the 'Meeting Tools > Refresh Untagged List' Menu Dropdown."],
+    ["- If you add any keywords or terms to the 'Filter Lists' sheet, you will need to Refresh for those terms to be included."],
     ["TIP 1: Keep 'MinutesInterval' at 0 (never auto-refresh) if you are planning to bulk edit calendar events"],
-    ["TIP 2: An automatic refresh (minutesInterval > 0) will REFRESH your list and you will LOSE un-applied edits on the 'Untagged Meetings' page"],
+    ["TIP 2: An automatic refresh (minutesInterval) will REFRESH your list and you will LOSE un-applied edits on the 'Untagged Meetings' page"],
     [" "],
-    ["2. Submitting Calendar Tag Changes to Your Calendar"],
-    ["-- Make desired edits to the 'Untagged Meetings' sheet:"],
-    ["-- Event tags due to a keyword/auto-tag suggestion will have a dark border around the cell being suggested"],
-    ["-- Unsaved event tags will show 'Synced: FALSE' if that change has not yet been saved to the event"],
-    ["-- Select 'Meeting Tools > Apply Changes to Calendar' Menu Dropdown to submit your calendar event tag changes."],
+    ["Submitting Calendar Tag Changes to Your Calendar"],
+    ["- When you have made your edits to the 'Untagged Meetings' sheet:"],
+    ["------ Select 'Meeting Tools > Apply Changes to Calendar' to update your calendar events in bulk."],
+    ["- Updates to Event Tags (via autoTagged suggestions or manually) will show 'Synced: FALSE' if that change has not yet been saved to the event"],
     ["TIP 1: App Scripts limit runtimes to 6 minutes - if timeouts occur due to meeting amount(s) see TIP 2"],
     ["TIP 2: Reduce the amount of DaysBack, and/or set 'SE Tag Mode' & 'ShowTaggedMeetings' to FALSE to reduce query results"],
     [" "],
-    ["3. Generating a Visuals Dashboard and Meeting Counts"],
-    ["-- The 'Visuals' sheet is created based on what appears within a populated 'Untagged Meetings' List"],
-    ["-- Create the Page using the 'Meeting Tools > Generate Dashboard' Menu Dropdown"],
-    ["-- The creation of the Visuals sheet is meant to be manually run once the 'Untagged Meetings' sheet has been populated"]
+    ["Generating a Visuals Chart and Meeting Counts"],
+    ["- The 'Visuals' sheet is created based on what appears within a populated 'Untagged Meetings' List"],
+    ["- Create the Page using the 'Meeting Tools > Generate Dashboard' Menu Dropdown"],
+    ["- The creation of the Visuals sheet is meant to be manually run once the 'Untagged Meetings' sheet has been populated"]
   ];
   
   const instrRange = configSheet.getRange(instrStartRow, 1, instructions.length, 1);
   instrRange.setValues(instructions);
   
-  // UPDATED INDICES: [0, 8, 15] 
-  const sectionHeaderIndices = [0, 8, 16]; 
+  const sectionHeaderIndices = [0, 7, 14]; 
   sectionHeaderIndices.forEach(idx => {
       configSheet.getRange(instrStartRow + idx, 1).setFontWeight("bold").setFontColor("#1155cc"); 
   });
 
   // --- 4. POPULATE FILTER LISTS ---
-  // Ensure Clean Slate
   filterSheet.clear();
 
   // A. Set Dynamic Header Formula
@@ -1310,18 +1341,19 @@ function initializeSheet() {
              .setFontFamily("Poppins").setVerticalAlignment("middle");
   filterSheet.setFrozenRows(1);
 
-  // B. Define DEFAULTS (UPDATED v3.0.18)
+  // B. Define DEFAULTS
   const filterDefaults = {
     "IgnorePhrases":        [""], 
     "IgnoreExactTitles":    [""], 
     "IgnoreFromEmails":     [""], 
     "IgnoreToEmails":       [""], 
-    "NightsAwayKeywords":   ["hotel", "trip", "stay"],  // Default Keywords
-    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], // Default Keywords
-    "AutoSELeadKeywords":   [""]  
+    "NightsAwayKeywords":   ["hotel", "trip", "stay"],  
+    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], 
+    "AutoSELeadKeywords":   [""],
+    "AutoSECoverageKeywords": [""] // NEW
   };
 
-  // C. Write Defaults (Vertical Pivot Logic)
+  // C. Write Defaults
   const defaultColumns = [
     filterDefaults["IgnorePhrases"],
     filterDefaults["IgnoreExactTitles"],
@@ -1329,7 +1361,8 @@ function initializeSheet() {
     filterDefaults["IgnoreToEmails"],
     filterDefaults["NightsAwayKeywords"],
     filterDefaults["AutoInPersonKeywords"],
-    filterDefaults["AutoSELeadKeywords"]
+    filterDefaults["AutoSELeadKeywords"],
+    filterDefaults["AutoSECoverageKeywords"] // NEW
   ];
 
   const maxRows = Math.max(...defaultColumns.map(col => col.length));
@@ -1355,7 +1388,7 @@ function initializeSheet() {
            .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
            .setHorizontalAlignment("center").setVerticalAlignment("middle");
   
-  // UPDATED LAYOUT (v3.2.3) - Added "Customer Success" Section
+  // LAYOUT DATA
   const tagsLayout = [
     ["", "", "", "", "", "", ""], 
     ["Sales Cycle", "", "", "", "", "", ""], 
@@ -1400,13 +1433,13 @@ function initializeSheet() {
     ["", "Other (OTHER)", "OT;", "", "", "", ""],
 
     ["Personal", "", "", "", "", "", ""], 
-    ["", "Enterprise Coverage", "ENT (SE);", "", "", "", ""],
-    ["", "SE Coverage", "SUB (SE);", "coverage", true, "", ""],
+  //  ["", "Enterprise Coverage", "ENT (SE);", "", "", "", ""],
+  //  ["", "SE Coverage", "SUB (SE);", "coverage", true, "", ""],
     ["", "Viper Team", "VPR (SE);", "Viper", true, "", ""],
     ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", ""],
     ["", "Travel Time", "TRVL (SE);", "Flight, Layover, Drive to, Commute", true, "", ""],
     ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", ""],
-    ["*future use", "Demo + SE Coverage", "DM (SE); SUB (SE);", "", "", "", ""]
+  //  ["*future use", "Demo + SE Coverage", "DM (SE); SUB (SE);", "", "", "", ""]
   ];
 
   const dataRange = tagsSheet.getRange(2, 2, tagsLayout.length, 7);
@@ -1423,34 +1456,41 @@ function initializeSheet() {
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
 
-  // Updated Header Rows (Indices shifted due to added section)
-  const headerRows = [3, 11, 14, 29, 35,, 39];
-  headerRows.forEach(r => {
-      tagsSheet.getRange(r, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
-  });
+  // DYNAMIC FORMATTING LOOP
+  let currentSection = "";
+  
+  for (let i = 0; i < tagsLayout.length; i++) {
+      const rowNum = i + 2; 
+      const sectionName = tagsLayout[i][0]; 
+      const tagName = tagsLayout[i][1];     
+      const defaultTitle = tagsLayout[i][4]; 
+      const defaultDesc = tagsLayout[i][5];  
 
-  // Apply Data Row Formatting
-  for (let r = 4; r <= tagsLayout.length + 1; r++) {
-     let sectionVal = tagsSheet.getRange(r, 2).getValue();
-     let tagVal = tagsSheet.getRange(r, 3).getValue();
-     
-     if (tagVal !== "") {
-         tagsSheet.getRange(r, 5, 1, 3).setBackground("#f3f3f3");
-         tagsSheet.getRange(r, 6, 1, 2).insertCheckboxes();
-     }
+      if (sectionName !== "") {
+          currentSection = sectionName;
+          tagsSheet.getRange(rowNum, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
+      } else if (tagName !== "") {
+          tagsSheet.getRange(rowNum, 5, 1, 3).setBackground("#f3f3f3");
+          const checkRange = tagsSheet.getRange(rowNum, 6, 1, 2);
+          checkRange.insertCheckboxes();
+          
+          if (defaultTitle === true) tagsSheet.getRange(rowNum, 6).check();
+          if (defaultDesc === true) tagsSheet.getRange(rowNum, 7).check();
+
+          let color = "#ffffff";
+          if (currentSection === "Sales Cycle") color = "#efefef";
+          else if (currentSection === "Customer Success") color = "#ead1dc";
+          else if (currentSection === "Solutions Engineering") color = "#d9ead3";
+          else if (currentSection === "Partner") color = "#cfe2f3";
+          else if (currentSection === "Other") color = "#fce5cd";
+          else if (currentSection === "Personal") {
+              if (tagName.includes("Enterprise") || tagName.includes("SE Coverage") || tagName.includes("Viper") || tagName.includes("Internal")) color = "#ff00ff";
+              else if (tagName.includes("Travel")) color = "#00ffff";
+              else if (tagName.includes("Overnight")) color = "#ff9900";
+          }
+          tagsSheet.getRange(rowNum, 3).setBackground(color);
+      }
   }
-
-  // --- COLUMN C COLOR CODING (Indices shifted) ---
-  tagsSheet.getRange(4, 3, 7, 1).setBackground("#efefef"); // Sales
-  tagsSheet.getRange(12, 3, 2, 1).setBackground("#ead1dc"); // Customer Success (Light Purple)
-  tagsSheet.getRange(15, 3, 14, 1).setBackground("#d9ead3"); // SE
-  tagsSheet.getRange(30, 3, 5, 1).setBackground("#cfe2f3"); // Partner
-  tagsSheet.getRange(36, 3, 3, 1).setBackground("#fce5cd"); // Other
-
-  // Personal Section
-  tagsSheet.getRange(40, 3, 4, 1).setBackground("#ff00ff");
-  tagsSheet.getRange(44, 3, 2, 1).setBackground("#00ffff");
-  tagsSheet.getRange(46, 3, 1, 1).setBackground("#ff9900");
 
   tagsSheet.getRange("H1").setValue("SAVED")
            .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
