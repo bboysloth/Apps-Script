@@ -994,6 +994,8 @@ function generateDashboard() {
   
   visualsSheet.showColumns(1, visualsSheet.getMaxColumns());
   visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
+
+  visualsSheet.setFrozenRows(6); // <--- ADD FREEZE LINE UNDERNEATH SCORECARDS SECTION
   
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
@@ -1135,7 +1137,12 @@ function generateDashboard() {
     
     // 5. Borders & Alignment
     visualsSheet.getRange(10, 8, sortedTags.length + 1, 8).setBorder(true, true, true, true, true, true);
-    visualsSheet.getRange(11, 9, numRows, 4).setHorizontalAlignment("center"); // Center counts
+    
+    // Center Align Counts (Columns I, J, K, L)
+    visualsSheet.getRange(11, 9, numRows, 4).setHorizontalAlignment("center");
+    
+    // Right Align Time & % (Columns M, N)
+    visualsSheet.getRange(11, 13, numRows, 2).setHorizontalAlignment("right");
   }
 
   // Chart Source (R, S)
@@ -1150,7 +1157,7 @@ function generateDashboard() {
       .setOption('is3D', true)
       .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
-      .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 12 })
+      .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 13 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
       .setOption('height', 600).setOption('width', 700).setPosition(10, 1, 0, 0).build(); 
     visualsSheet.insertChart(pieChart);
