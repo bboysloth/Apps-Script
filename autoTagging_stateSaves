@@ -1082,6 +1082,17 @@ function generateDashboard() {
   visualsSheet.setConditionalFormatRules(scRules);
 
   // --- DETAILED TAG TABLE (Starts H10) ---
+
+  // Merged "From Calendar" Header (Row 9)
+  visualsSheet.getRange("H9:O9").merge()
+              .setValue("From Untagged Meetings List and Calendar")
+              .setFontWeight("bold")
+              .setFontColor(fg) // Font Color White
+              .setBackground("#3d9fd2") // Verkada Light Blue
+              .setHorizontalAlignment("center")
+              .setFontSize(11)
+              .setBorder(true, true, true, true, true, true);
+
   const headers = ["Tag Name", "Total", "IP", "Lead", "Cov", "Time", "%", "Hide"];
   visualsSheet.getRange("H10:O10").setValues([headers])
               .setFontWeight("bold").setBackground(bg).setFontColor(fg)
@@ -1159,7 +1170,7 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 13 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 600).setOption('width', 700).setPosition(10, 1, 0, 0).build(); 
+      .setOption('height', 600).setOption('width', 710).setPosition(9, 1, 0, 0).build(); // PIE CHART POSITION and SIZE
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
 
@@ -1174,7 +1185,7 @@ function generateDashboard() {
   visualsSheet.setColumnWidth(10, 50); // J: IP
   visualsSheet.setColumnWidth(11, 50); // K: Lead
   visualsSheet.setColumnWidth(12, 50); // L: Cov
-  visualsSheet.setColumnWidth(13, 100);// M: Time
+  visualsSheet.setColumnWidth(13, 90);// M: Time
   visualsSheet.setColumnWidth(14, 60); // N: %
   visualsSheet.setColumnWidth(15, 50); // O: Hide
   
