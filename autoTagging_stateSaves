@@ -22,21 +22,27 @@
 // #region 1. SPREADSHEET UI & MENU CREATION
 // =================================================================
 function onOpen() {
-  SpreadsheetApp.getUi()
-      .createMenu('Meeting Tools')
-      .addItem('Save and Refresh Untagged List', 'findEventsMissingTag')
-      .addSeparator()
-      .addItem('Apply Changes to Calendar', 'applyBatchChanges')
-      .addSeparator()
-      .addItem('Generate Visuals Dashboard', 'generateDashboard')
-      .addSeparator()
-      // .addItem('Config: Save & Refresh Untagged List', 'saveConfigAndRun')
-      .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
-      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
-      .addSeparator()
-      .addItem('Admin: Initialize/Repair Sheets', 'initializeSheet') // NEW (v2.8.1)
-      .addToUi();
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Meeting Tools')
+    .addItem('Save and Refresh Untagged List', 'findEventsMissingTag')
+    .addSeparator()
+    .addItem('Apply Changes to Calendar', 'applyBatchChanges')
+    .addSeparator()
+    .addItem('Generate Visuals Dashboard', 'generateDashboard')
+    .addSeparator()
+    // Config Tools
+    .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
+    .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+    .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
+    .addSeparator()
+    // New Admin Submenu
+    .addSubMenu(ui.createMenu('Admin: Initialize/Repair Sheets')
+        .addItem('Initialize ALL Sheets (Full Reset)', 'initializeAllSheets')
+        .addSeparator()
+        .addItem('Repair "Config" Sheet Only', 'repairConfigSheet')
+        .addItem('Repair "Tags" Sheet Only', 'repairTagsSheet')
+        .addItem('Repair "Filter Lists" Sheet Only', 'repairFilterSheet'))
+    .addToUi();
 }
 // #endregion
 
@@ -115,7 +121,7 @@ function refreshUntaggedList() {
 // #endregion
 
 // =================================================================
-// #region 3. CORE LOGIC FUNCTIONS (v3.4.1 - Fix Formatting/Clear)
+// #region 3. CORE LOGIC FUNCTIONS (v3.12.0 - Null Safety Fix)
 // =================================================================
 
 function findEventsMissingTag() {
@@ -154,9 +160,11 @@ function findEventsMissingTag() {
         const locationFilterEnabled = (getConfig("LocationSetsInPerson") || "false").toString().toLowerCase() === "true";
         const locationRequiresExternal = (getConfig("LocationRequiresExternal") || "false").toString().toLowerCase() === "true";
         
-        const modifier = getConfig("InPersonModifier");
-        const seLeadTagText = getConfig("SELeadTagText");
-        const seCoverTagText = getConfig("SECoverageTagText");
+        // FIX: Added safety check (|| "") to ensure these are strings, not null
+        const modifier = getConfig("InPersonModifier") || "";
+        const seLeadTagText = getConfig("SELeadTagText") || "";
+        const seCoverTagText = getConfig("SECoverageTagText") || "";
+        
         const tagPrefix = "Verkada Meeting Tag: ";
         const attendanceFilter = getConfig("AttendanceFilter");
         
@@ -452,9 +460,12 @@ function updateMeetingTag(e, isSingleEditMode) {
 
     ss.toast("Processing batch... Please wait.");
     const tagPrefix = "Verkada Meeting Tag: ";
-    const seLeadTag = getConfig("SELeadTagText");
-    const seCoverTag = getConfig("SECoverageTagText"); 
-    const modifier = getConfig("InPersonModifier");
+    
+    // FIX: Force null values to empty strings to prevent "reading 'trim'" error
+    const seLeadTag = getConfig("SELeadTagText") || "";
+    const seCoverTag = getConfig("SECoverageTagText") || ""; 
+    const modifier = getConfig("InPersonModifier") || "";
+    
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) { ss.toast("No data to process."); return; }
     
@@ -508,9 +519,10 @@ function updateMeetingTag(e, isSingleEditMode) {
         if (eventToUpdate) {
           let description = eventToUpdate.description || "";
 
-          // 1. Surgical Removal
-          description = description.replace(new RegExp(seLeadTag.trim(), 'gi'), '');
-          description = description.replace(new RegExp(seCoverTag.trim(), 'gi'), '');
+          // FIX: Only call .trim() if the tag text actually exists (is not empty)
+          if (seLeadTag) description = description.replace(new RegExp(seLeadTag.trim(), 'gi'), '');
+          if (seCoverTag) description = description.replace(new RegExp(seCoverTag.trim(), 'gi'), '');
+          
           description = description.replace(new RegExp(tagPrefix + ".*", 'gi'), '');
 
           description = description.trim();
@@ -518,10 +530,10 @@ function updateMeetingTag(e, isSingleEditMode) {
           const isHtml = /<(?!(?:https?|tel):)[a-z][\s\S]*>/i.test(description);
           const breakChar = isHtml ? "<br>" : "\n";
 
-          if (currentSeLead) {
+          if (currentSeLead && seLeadTag) {
              description += breakChar + breakChar + seLeadTag;
           }
-          if (currentSeCover) {
+          if (currentSeCover && seCoverTag) {
              description += breakChar + seCoverTag; 
           }
           
@@ -1170,7 +1182,7 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend.textStyle', { fontName: 'Poppins', fontSize: 13 })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setOption('height', 600).setOption('width', 710).setPosition(9, 1, 0, 0).build(); // PIE CHART POSITION and SIZE
+      .setOption('height', 600).setOption('width', 700).setPosition(9, 1, 0, 0).build(); // PIE CHART POSITION and SIZE
     visualsSheet.insertChart(pieChart);
   } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
 
@@ -1196,42 +1208,55 @@ function generateDashboard() {
 // #endregion
 
 // =================================================================
-// #region 7. INITIALIZATION & SCAFFOLDING (v3.3.3)
+// #region 7. INITIALIZATION & SCAFFOLDING (v3.11.0 - Modular Repair)
 // =================================================================
 
 /**
- * v3.3.3: Builds ALL system sheets.
- * UPDATES: 
- * - FIX: Made Instruction start row DYNAMIC based on configData length.
- * (Previously static row 23 was overwriting new config parameters).
+ * MASTER INITIALIZATION: Runs ALL repair functions in order.
+ * Use this for a full system reset or first-time setup.
  */
-function initializeSheet() {
+function initializeAllSheets() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // --- 1. SHEET CREATION PHASE ---
-  let mainSheet = ss.getSheetByName("Untagged Meetings");
-  if (!mainSheet) { mainSheet = ss.insertSheet("Untagged Meetings"); }
-
-  let configSheet = ss.getSheetByName("Config");
-  if (!configSheet) { configSheet = ss.insertSheet("Config"); }
   
-  let filterSheet = ss.getSheetByName("Filter Lists");
-  if (!filterSheet) { filterSheet = ss.insertSheet("Filter Lists"); }
+  // 1. Ensure all tabs exist first
+  repairSheetStructure();
+  
+  // 2. Run individual repairs
+  repairConfigSheet();
+  repairFilterSheet();
+  repairTagsSheet();
+  
+  // 3. Reset Visuals (Optional, mostly just clears it)
+  const visualsSheet = ss.getSheetByName("Visuals");
+  if (visualsSheet) visualsSheet.clear();
 
-  let tagsSheet = ss.getSheetByName("Tags");
-  if (!tagsSheet) { tagsSheet = ss.insertSheet("Tags"); }
+  ss.toast("Full system initialization complete.");
+}
 
-  let visualsSheet = ss.getSheetByName("Visuals");
-  if (!visualsSheet) { visualsSheet = ss.insertSheet("Visuals"); }
+/**
+ * Helper: Ensures all required sheets exist and are in the correct order.
+ * Does NOT clear data.
+ */
+function repairSheetStructure() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ["Untagged Meetings", "Config", "Filter Lists", "Tags", "Visuals"];
+  
+  sheets.forEach((name, index) => {
+    let sheet = ss.getSheetByName(name);
+    if (!sheet) { sheet = ss.insertSheet(name); }
+    ss.setActiveSheet(sheet);
+    ss.moveActiveSheet(index + 1);
+  });
+}
 
-  // --- 2. ENFORCE TAB ORDER ---
-  ss.setActiveSheet(mainSheet); ss.moveActiveSheet(1);
-  ss.setActiveSheet(configSheet); ss.moveActiveSheet(2);
-  ss.setActiveSheet(filterSheet); ss.moveActiveSheet(3);
-  ss.setActiveSheet(tagsSheet); ss.moveActiveSheet(4);
-  ss.setActiveSheet(visualsSheet); ss.moveActiveSheet(5);
-
-  // --- 3. POPULATE 'CONFIG' SHEET ---
+/**
+ * REPAIR CONFIG: Resets the 'Config' sheet to defaults.
+ */
+function repairConfigSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let configSheet = ss.getSheetByName("Config");
+  if (!configSheet) configSheet = ss.insertSheet("Config");
+  
   configSheet.clear(); 
   
   const configData = [
@@ -1272,7 +1297,6 @@ function initializeSheet() {
   const outputRows = configData.map(r => [r.key, r.val, r.desc]);
   configSheet.getRange(2, 1, outputRows.length, 3).setValues(outputRows);
 
-  // --- CONFIG FORMATTING ---
   configSheet.getRange("A:C").setFontFamily("Poppins");
   configSheet.getRange("A:A").setFontWeight("bold");
   configSheet.getRange("B:B").setFontWeight("bold").setWrap(true).setHorizontalAlignment("center").setVerticalAlignment("middle");
@@ -1290,7 +1314,6 @@ function initializeSheet() {
     const descCell = configSheet.getRange(row, 3);
     const type = configData[i].type;
 
-    // Apply Colors
     cell.setBackground("#a0d0e9"); 
     descCell.setFontColor("#cc0000");
 
@@ -1316,8 +1339,6 @@ function initializeSheet() {
     }
   }
   
-  // --- CONFIG INSTRUCTIONS ---
-  // FIX: Make this dynamic. Start 2 rows after data ends.
   const instrHeaderRow = outputRows.length + 3; 
   configSheet.getRange(instrHeaderRow, 1).setValue("INSTRUCTIONS: ⬇️")
              .setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
@@ -1351,18 +1372,26 @@ function initializeSheet() {
   sectionHeaderIndices.forEach(idx => {
       configSheet.getRange(instrStartRow + idx, 1).setFontWeight("bold").setFontColor("#1155cc"); 
   });
+  
+  ss.toast("Config sheet repaired.");
+}
 
-  // --- 4. POPULATE FILTER LISTS ---
+/**
+ * REPAIR FILTERS: Resets the 'Filter Lists' sheet.
+ */
+function repairFilterSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let filterSheet = ss.getSheetByName("Filter Lists");
+  if (!filterSheet) filterSheet = ss.insertSheet("Filter Lists");
+  
   filterSheet.clear();
 
-  // A. Set Dynamic Header Formula
   const syncFormula = `=TRANSPOSE(QUERY(Config!A:A, "SELECT A WHERE A IS NOT NULL AND (A CONTAINS 'Keywords' OR A CONTAINS 'Ignore' OR A CONTAINS 'Location') AND A != 'AttendanceFilter' AND A != 'FilterForMissingSETags' AND A != 'LocationSetsInPerson' AND A != 'LocationRequiresExternal'", 0))`;
   filterSheet.getRange("A1").setFormula(syncFormula);
   filterSheet.getRange("1:1").setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
              .setFontFamily("Poppins").setVerticalAlignment("middle");
   filterSheet.setFrozenRows(1);
 
-  // B. Define DEFAULTS
   const filterDefaults = {
     "IgnorePhrases":        [""], 
     "IgnoreExactTitles":    [""], 
@@ -1371,10 +1400,9 @@ function initializeSheet() {
     "NightsAwayKeywords":   ["hotel", "trip", "stay"],  
     "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], 
     "AutoSELeadKeywords":   [""],
-    "AutoSECoverageKeywords": [""] // NEW
+    "AutoSECoverageKeywords": [""] 
   };
 
-  // C. Write Defaults
   const defaultColumns = [
     filterDefaults["IgnorePhrases"],
     filterDefaults["IgnoreExactTitles"],
@@ -1383,7 +1411,7 @@ function initializeSheet() {
     filterDefaults["NightsAwayKeywords"],
     filterDefaults["AutoInPersonKeywords"],
     filterDefaults["AutoSELeadKeywords"],
-    filterDefaults["AutoSECoverageKeywords"] // NEW
+    filterDefaults["AutoSECoverageKeywords"]
   ];
 
   const maxRows = Math.max(...defaultColumns.map(col => col.length));
@@ -1400,8 +1428,18 @@ function initializeSheet() {
   if (finalFilterData.length > 0) {
     filterSheet.getRange(2, 1, finalFilterData.length, finalFilterData[0].length).setValues(finalFilterData);
   }
+  
+  ss.toast("Filter Lists sheet repaired.");
+}
 
-  // --- 5. POPULATE TAGS SHEET ---
+/**
+ * REPAIR TAGS: Resets the 'Tags' sheet with Dynamic Formatting.
+ */
+function repairTagsSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let tagsSheet = ss.getSheetByName("Tags");
+  if (!tagsSheet) tagsSheet = ss.insertSheet("Tags");
+  
   tagsSheet.clear(); 
 
   const tagHeaders = [["Demofy Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag (For Calendar)", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "SAVED"]];
@@ -1409,9 +1447,7 @@ function initializeSheet() {
            .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
            .setHorizontalAlignment("center").setVerticalAlignment("middle");
   
-  // LAYOUT DATA
   const tagsLayout = [
-    ["", "", "", "", "", "", ""], 
     ["Sales Cycle", "", "", "", "", "", ""], 
     ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", ""],
     ["", "Demo (AE)", "DM;", "", "", "", ""],
@@ -1422,8 +1458,8 @@ function initializeSheet() {
     ["", "Executive Alignment / Board Meeting (AE)", "EX;", "", "", "", ""],
     
     ["Customer Success", "", "", "", "", "", ""], 
-    ["", "Existing Customer Check-In / CBR", "OC;", "", "", "", ""],
-    ["", "Existing Customer Support", "SP;", "", "", "", ""],
+    ["", "Existing Customer Check-In / CBR (AE)", "OC;", "", "", "", ""],
+    ["", "Existing Customer Support (AE)", "SP;", "", "", "", ""],
 
     ["Solutions Engineering", "", "", "", "", "", ""], 
     ["", "Demo (SE)", "DM (SE);", "demo", true, "", ""],
@@ -1453,22 +1489,16 @@ function initializeSheet() {
     ["", "VCE Training (OTHER)", "VC;", "", "", "", ""],
     ["", "Other (OTHER)", "OT;", "", "", "", ""],
 
-    ["Personal", "", "", "", "", "", ""],
-  //  ["*personal tags will result in these mtgs being excluded from RADAR metrics", "", "", "", "", "", ""],  
-  //  ["", "Enterprise Coverage", "ENT (SE);", "", "", "", ""],
-  //  ["", "SE Coverage", "SUB (SE);", "coverage", true, "", ""],
+    ["Personal", "", "", "", "", "", ""], 
     ["", "Viper Team", "VPR (SE);", "Viper", true, "", ""],
     ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", ""],
     ["", "Travel Time", "TRVL (SE);", "Flight, Layover, Drive to, Commute", true, "", ""],
-    ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", ""],
-    ["", "", "", "", "", "", ""], 
-  //  ["*future use", "Demo + SE Coverage", "DM (SE); SUB (SE);", "", "", "", ""]
+    ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", ""]
   ];
 
   const dataRange = tagsSheet.getRange(2, 2, tagsLayout.length, 7);
   dataRange.setValues(tagsLayout);
   
-  // Base Formatting
   dataRange.setFontColor("black").setBackground("white");
 
   tagsSheet.getRange("A:Z").setFontFamily("Poppins").setVerticalAlignment("middle");
@@ -1479,8 +1509,29 @@ function initializeSheet() {
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
 
-  // DYNAMIC FORMATTING LOOP
-  let currentSection = "";
+  // --- DYNAMIC FORMATTING LOGIC ---
+  const sectionPalette = [
+    "#efefef", // Grey (Sales)
+    "#ead1dc", // Purple (CS)
+    "#d9ead3", // Green (SE)
+    "#cfe2f3", // Blue (Partner)
+    "#fce5cd", // Orange (Other)
+    "#d9d2e9", // Lavender (Future 1)
+    "#fff2cc", // Yellow (Future 2)
+    "#f4cccc"  // Red (Future 3)
+  ];
+  
+  const tagColorOverrides = [
+    { keyword: "Enterprise", color: "#ff00ff" },
+    { keyword: "SE Coverage", color: "#ff00ff" },
+    { keyword: "Viper", color: "#ff00ff" },
+    { keyword: "Internal", color: "#ff00ff" },
+    { keyword: "Travel", color: "#00ffff" },
+    { keyword: "Overnight", color: "#ff9900" }
+  ];
+
+  let currentSectionColor = sectionPalette[0];
+  let paletteIndex = 0;
   
   for (let i = 0; i < tagsLayout.length; i++) {
       const rowNum = i + 2; 
@@ -1490,7 +1541,8 @@ function initializeSheet() {
       const defaultDesc = tagsLayout[i][5];  
 
       if (sectionName !== "") {
-          currentSection = sectionName;
+          currentSectionColor = sectionPalette[paletteIndex % sectionPalette.length];
+          paletteIndex++;
           tagsSheet.getRange(rowNum, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
       } else if (tagName !== "") {
           tagsSheet.getRange(rowNum, 5, 1, 3).setBackground("#f3f3f3");
@@ -1500,16 +1552,12 @@ function initializeSheet() {
           if (defaultTitle === true) tagsSheet.getRange(rowNum, 6).check();
           if (defaultDesc === true) tagsSheet.getRange(rowNum, 7).check();
 
-          let color = "#ffffff";
-          if (currentSection === "Sales Cycle") color = "#efefef";
-          else if (currentSection === "Customer Success") color = "#ead1dc";
-          else if (currentSection === "Solutions Engineering") color = "#d9ead3";
-          else if (currentSection === "Partner") color = "#cfe2f3";
-          else if (currentSection === "Other") color = "#fce5cd";
-          else if (currentSection === "Personal") {
-              if (tagName.includes("Viper") || tagName.includes("Internal")) color = "#ff00ff";
-              else if (tagName.includes("Travel")) color = "#00ffff";
-              else if (tagName.includes("Overnight")) color = "#ff9900";
+          let color = currentSectionColor;
+          for (const override of tagColorOverrides) {
+             if (tagName.includes(override.keyword)) {
+               color = override.color;
+               break; 
+             }
           }
           tagsSheet.getRange(rowNum, 3).setBackground(color);
       }
@@ -1518,7 +1566,6 @@ function initializeSheet() {
   tagsSheet.getRange("H1").setValue("SAVED")
            .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
            
-  // --- ADD TAGS SHEET INSTRUCTIONS (Footer) ---
   const tagsFooterStart = tagsLayout.length + 3; 
   const tagsFooterText = [
       ["1. SAVE CHANGES: 'Meeting Tools > Update Tag Dropdowns and Colors'"],
@@ -1531,7 +1578,6 @@ function initializeSheet() {
            .setFontColor("#cc0000").setFontWeight("bold");
   
   updateTagDropdownsAndColors(true);
-
-  ss.toast("All sheets initialized successfully.");
+  ss.toast("Tags sheet repaired.");
 }
 // #endregion
