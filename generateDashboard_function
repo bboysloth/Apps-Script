@@ -1,5 +1,5 @@
 // =================================================================
-// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.20.0 - Radar Boolean Fix & Header Polish)
+// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.22.0 - Percentage Layout Fix)
 // =================================================================
 
 function _formatMinutesToHours(totalMinutes) {
@@ -102,7 +102,6 @@ function generateDashboard() {
       const ipIdx = headers.indexOf("Verkada Action: In Person Meeting");
       const leadIdx = headers.indexOf("Verkada Action: SE Lead");
       
-      // Helper to match "True", "TRUE", true, 1
       const isTrue = (val) => String(val).toLowerCase() === "true" || val === 1;
 
       if (typeIdx > -1) {
@@ -116,7 +115,6 @@ function generateDashboard() {
                       const grp = groupedStats.get(rBase);
                       grp.radar.count += 1;
                       
-                      // Updated check using helper
                       if (ipIdx > -1 && isTrue(radarData[i][ipIdx])) grp.radar.ip += 1;
                       if (leadIdx > -1 && isTrue(radarData[i][leadIdx])) grp.radar.lead += 1;
                   } 
@@ -283,7 +281,6 @@ function generateDashboard() {
                   .setFontWeight("bold").setFontColor(fg).setBackground("#6aa84f").setHorizontalAlignment("center")
                   .setFontSize(11).setBorder(true, true, true, true, true, true);
 
-      // FIX: Full text headers
       const compHeaders = ["Tag Name", "Cal Total", "Radar Total", "Diff", "Cal IP", "Radar IP", "Diff", "Cal Lead", "Radar Lead", "Diff"];
       visualsSheet.getRange(compHeaderRow + 1, 8, 1, 10).setValues([compHeaders])
                   .setFontWeight("bold").setBackground(bg).setFontColor(fg).setHorizontalAlignment("center");
@@ -332,8 +329,12 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
       .setHiddenDimensionStrategy(Charts.ChartHiddenDimensionStrategy.SHOW_BOTH)
-      .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 14 } }) 
-      .setOption('chartArea', { left: 20, top: 40, width: '60%', height: '85%' }) 
+      
+      .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
+      
+      // FIX: Use safe "Percentage" layout to prevent blank chart & squashed text
+      .setOption('chartArea', { left: '5%', top: '10%', width: '75%', height: '80%' }) 
+      
       .setOption('height', 600)
       .setOption('width', 700) 
       .setPosition(9, 1, 0, 0).build(); 
@@ -354,23 +355,9 @@ function generateDashboard() {
   visualsSheet.setColumnWidth(14, 60); 
   visualsSheet.setColumnWidth(15, 50); 
   
-  // FIX: Widen Comp Table columns
-  visualsSheet.setColumnWidth(16, 90); // I (Total Radar)
-  visualsSheet.setColumnWidth(17, 90); // J 
-  visualsSheet.setColumnWidth(18, 90); // K
-  visualsSheet.setColumnWidth(19, 90); // L
-  visualsSheet.setColumnWidth(20, 60); // M (Diff)
-  
-  // Note: The above column Widths logic (16-20) corresponds to indices P-T.
-  // Actually, Discrepancy table is in H-Q range (rows down), wait no.
-  // Discrepancy table is columns H..Q (8..17).
-  // H=Tag, I=CalTot, J=RadTot, K=Diff, L=CalIP, M=RadIP, N=Diff, O=CalLead, P=RadLead, Q=Diff
-  
-  // Set widths for Discrepancy Table Columns specifically (I through Q)
   for (let c = 9; c <= 17; c++) {
       visualsSheet.setColumnWidth(c, 85); 
   }
-  visualsSheet.setColumnWidth(8, 250); // Tag Name remains wide
   
   [1, 2, 3, 5, 6, 7].forEach(c => visualsSheet.setColumnWidth(c, 100));
   
