@@ -1,5 +1,5 @@
 // =================================================================
-// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.22.0 - Percentage Layout Fix)
+// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.25.0 - Rounding & Green Zero Fix)
 // =================================================================
 
 function _formatMinutesToHours(totalMinutes) {
@@ -24,6 +24,14 @@ function generateDashboard() {
   else { 
       visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
       visualsSheet.clear(); 
+      
+      // Clear row groups
+      try {
+        const fullRange = visualsSheet.getRange(1, 1, visualsSheet.getMaxRows(), 1);
+        for (let i = 0; i < 8; i++) {
+          fullRange.shiftRowGroupDepth(-1);
+        }
+      } catch(e) { }
   }
   
   visualsSheet.showColumns(1, visualsSheet.getMaxColumns());
@@ -69,8 +77,6 @@ function generateDashboard() {
         }
         
         const group = groupedStats.get(baseName);
-        
-        // Update Aggregate
         group.agg.count += 1;
         group.agg.time += duration;
         group.agg.nights += nights;
@@ -79,7 +85,6 @@ function generateDashboard() {
         if (isCover) group.agg.cover += 1;
         if (isExt) group.agg.ext += 1;
         
-        // Update Variant
         if (!group.variants.has(tagName)) {
             group.variants.set(tagName, { count: 0, time: 0, ip: 0, lead: 0, cover: 0 });
         }
@@ -114,7 +119,6 @@ function generateDashboard() {
                   if (groupedStats.has(rBase)) {
                       const grp = groupedStats.get(rBase);
                       grp.radar.count += 1;
-                      
                       if (ipIdx > -1 && isTrue(radarData[i][ipIdx])) grp.radar.ip += 1;
                       if (leadIdx > -1 && isTrue(radarData[i][leadIdx])) grp.radar.lead += 1;
                   } 
@@ -185,7 +189,6 @@ function generateDashboard() {
   sortedGroups.forEach(([baseName, data]) => {
       const isMulti = data.variants.size > 1;
       
-      // 1. PUSH AGGREGATE ROW (Parent)
       displayRows.push([
           baseName + (isMulti ? " (Combined)" : ""), 
           data.agg.count,
@@ -195,12 +198,16 @@ function generateDashboard() {
           _formatMinutesToHours(data.agg.time)
       ]);
       
-      // Comparison: Count, IP, Lead
+      // FIX: Force Rounding to prevent floating point non-zeros
+      const diffCount = Math.round(data.agg.count - data.radar.count);
+      const diffIP = Math.round(data.agg.ip - data.radar.ip);
+      const diffLead = Math.round(data.agg.lead - data.radar.lead);
+      
       comparisonRows.push([
           baseName, 
-          data.agg.count, data.radar.count, (data.agg.count - data.radar.count),
-          data.agg.ip,    data.radar.ip,    (data.agg.ip - data.radar.ip),
-          data.agg.lead,  data.radar.lead,  (data.agg.lead - data.radar.lead)
+          data.agg.count, data.radar.count, diffCount,
+          data.agg.ip,    data.radar.ip,    diffIP,
+          data.agg.lead,  data.radar.lead,  diffLead
       ]);
 
       hiddenMetricRows.push([data.agg.ext, data.agg.nights, data.agg.time]);
@@ -210,7 +217,7 @@ function generateDashboard() {
       const parentRowIdx = currentRowIndex;
       currentRowIndex++;
 
-      // 2. PUSH CHILD ROWS
+      // Child Rows
       if (isMulti) {
           const variants = [...data.variants.entries()].sort((a, b) => b[1].count - a[1].count);
           variants.forEach(([tagName, vStats]) => {
@@ -229,7 +236,7 @@ function generateDashboard() {
       }
   });
 
-  // --- 5. WRITE MAIN TABLE (H-O) ---
+  // --- 5. WRITE MAIN TABLE ---
   const mainHeaderRow = 9;
   const mainStartRow = 11;
   const mainEndRow = mainStartRow + displayRows.length;
@@ -271,8 +278,8 @@ function generateDashboard() {
     visualsSheet.getRange(mainHeaderRow + 1, 8, displayRows.length + 1, 8).setBorder(true, true, true, true, true, true);
   }
 
-  // --- 6. WRITE COMPARISON TABLE (Below Main Table) ---
-  const compHeaderRow = mainEndRow + 2; 
+  // --- 6. WRITE COMPARISON TABLE ---
+  const compHeaderRow = mainEndRow + 1; 
   const compStartRow = compHeaderRow + 2;
   const compLen = comparisonRows.length;
   
@@ -296,14 +303,18 @@ function generateDashboard() {
       
       visualsSheet.getRange(compHeaderRow + 1, 8, compLen + 1, 10).setBorder(true, true, true, true, true, true);
 
+      // Diff Highlighting
       const diffRanges = [
           visualsSheet.getRange(compStartRow, 11, compLen, 1),
           visualsSheet.getRange(compStartRow, 14, compLen, 1),
           visualsSheet.getRange(compStartRow, 17, compLen, 1)
       ];
-      const diffRule = SpreadsheetApp.newConditionalFormatRule().whenNumberNotEqualTo(0).whenCellNotEmpty().setFontColor("#cc0000").setBold(true).setBackground("#f4cccc").setRanges(diffRanges).build();
+      
+      // FIX: Green Rule First for Priority
+      const diffGreenRule = SpreadsheetApp.newConditionalFormatRule().whenNumberEqualTo(0).setFontColor("#38761d").setBold(true).setBackground("#d9ead3").setRanges(diffRanges).build();
+      const diffRedRule = SpreadsheetApp.newConditionalFormatRule().whenNumberNotEqualTo(0).whenCellNotEmpty().setFontColor("#cc0000").setBold(true).setBackground("#f4cccc").setRanges(diffRanges).build();
 
-      visualsSheet.setConditionalFormatRules(scorecardRules.concat([diffRule]));
+      visualsSheet.setConditionalFormatRules(scorecardRules.concat([diffGreenRule, diffRedRule]));
   }
 
   // --- 7. APPLY GROUPING ---
@@ -329,12 +340,8 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
       .setHiddenDimensionStrategy(Charts.ChartHiddenDimensionStrategy.SHOW_BOTH)
-      
       .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
-      
-      // FIX: Use safe "Percentage" layout to prevent blank chart & squashed text
-      .setOption('chartArea', { left: '5%', top: '10%', width: '75%', height: '80%' }) 
-      
+      .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
       .setOption('height', 600)
       .setOption('width', 700) 
       .setPosition(9, 1, 0, 0).build(); 
@@ -346,7 +353,7 @@ function generateDashboard() {
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
   visualsSheet.getRange("A1").setValue(`Dashboard for: ${dateString} (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
 
-  visualsSheet.setColumnWidth(8, 250); // H
+  visualsSheet.setColumnWidth(8, 250); 
   visualsSheet.setColumnWidth(9, 60); 
   visualsSheet.setColumnWidth(10, 50); 
   visualsSheet.setColumnWidth(11, 50); 
