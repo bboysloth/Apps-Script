@@ -1,5 +1,5 @@
 // =================================================================
-// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.25.0 - Rounding & Green Zero Fix)
+// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.26.0 - Dynamic Chart Source Fix)
 // =================================================================
 
 function _formatMinutesToHours(totalMinutes) {
@@ -25,7 +25,6 @@ function generateDashboard() {
       visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
       visualsSheet.clear(); 
       
-      // Clear row groups
       try {
         const fullRange = visualsSheet.getRange(1, 1, visualsSheet.getMaxRows(), 1);
         for (let i = 0; i < 8; i++) {
@@ -180,7 +179,7 @@ function generateDashboard() {
   const displayRows = [];     
   const comparisonRows = [];  
   const hiddenMetricRows = []; 
-  const chartSourceRows = []; 
+  // Note: chartSourceRows array is removed because we use a FORMULA now.
   
   const groupsToCreate = []; 
   let currentRowIndex = 11;
@@ -198,7 +197,6 @@ function generateDashboard() {
           _formatMinutesToHours(data.agg.time)
       ]);
       
-      // FIX: Force Rounding to prevent floating point non-zeros
       const diffCount = Math.round(data.agg.count - data.radar.count);
       const diffIP = Math.round(data.agg.ip - data.radar.ip);
       const diffLead = Math.round(data.agg.lead - data.radar.lead);
@@ -211,8 +209,7 @@ function generateDashboard() {
       ]);
 
       hiddenMetricRows.push([data.agg.ext, data.agg.nights, data.agg.time]);
-      chartSourceRows.push([baseName, data.agg.count]);
-
+      
       parentRowsIndices.push(currentRowIndex); 
       const parentRowIdx = currentRowIndex;
       currentRowIndex++;
@@ -254,17 +251,19 @@ function generateDashboard() {
   if (displayRows.length > 0) {
     visualsSheet.getRange(mainStartRow, 8, displayRows.length, 6).setValues(displayRows);
     visualsSheet.getRange(mainStartRow, 27, hiddenMetricRows.length, 3).setValues(hiddenMetricRows).setNumberFormat("0");
-    visualsSheet.getRange(mainStartRow, 30, chartSourceRows.length, 2).setValues(chartSourceRows);
 
+    // Checkboxes
     visualsSheet.getRange(mainStartRow, 15, visualsSheet.getMaxRows() - mainStartRow, 1).removeCheckboxes();
     parentRowsIndices.forEach(idx => visualsSheet.getRange(idx, 15).insertCheckboxes());
     
+    // Formulas
     const pctFormulas = [];
     for (let i = mainStartRow; i < mainEndRow; i++) {
         pctFormulas.push([`=IF(O${i}="", "-", IF(O${i}=TRUE, "-", I${i}/SUMIF($O$11:$O,FALSE,$I$11:$I)))`]);
     }
     visualsSheet.getRange(mainStartRow, 14, displayRows.length, 1).setFormulas(pctFormulas).setNumberFormat("0.0%");
 
+    // Styling
     visualsSheet.getRange(mainStartRow, 9, displayRows.length, 4).setNumberFormat("0").setHorizontalAlignment("center");
     visualsSheet.getRange(mainStartRow, 13, displayRows.length, 2).setHorizontalAlignment("right");
     
@@ -303,14 +302,12 @@ function generateDashboard() {
       
       visualsSheet.getRange(compHeaderRow + 1, 8, compLen + 1, 10).setBorder(true, true, true, true, true, true);
 
-      // Diff Highlighting
       const diffRanges = [
           visualsSheet.getRange(compStartRow, 11, compLen, 1),
           visualsSheet.getRange(compStartRow, 14, compLen, 1),
           visualsSheet.getRange(compStartRow, 17, compLen, 1)
       ];
       
-      // FIX: Green Rule First for Priority
       const diffGreenRule = SpreadsheetApp.newConditionalFormatRule().whenNumberEqualTo(0).setFontColor("#38761d").setBold(true).setBackground("#d9ead3").setRanges(diffRanges).build();
       const diffRedRule = SpreadsheetApp.newConditionalFormatRule().whenNumberNotEqualTo(0).whenCellNotEmpty().setFontColor("#cc0000").setBold(true).setBackground("#f4cccc").setRanges(diffRanges).build();
 
@@ -326,11 +323,18 @@ function generateDashboard() {
       } catch(e) {}
   });
 
+  // --- CHART SOURCE (Fix: Dynamic Formula) ---
   visualsSheet.getRange("AD10").setValue("Chart Source");
+  
+  // FIX: Dynamic filter that ignores hidden rows (O=FALSE) AND child rows (Starts with space)
+  visualsSheet.getRange("AD11").setFormula(`=FILTER(H11:I, O11:O=FALSE, LEFT(H11:H, 1) <> " ")`);
+  
   SpreadsheetApp.flush(); 
 
-  if (chartSourceRows.length > 0) {
-    const chartRange = visualsSheet.getRange("AD11:AE" + (10 + chartSourceRows.length)); 
+  // Since we use a formula, we don't know exact rows, so we grab a large range for the chart.
+  if (displayRows.length > 0) {
+    // Dynamic range AD11:AE
+    const chartRange = visualsSheet.getRange("AD11:AE" + (11 + displayRows.length)); 
     
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown (Aggregated)')
@@ -340,8 +344,10 @@ function generateDashboard() {
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
       .setHiddenDimensionStrategy(Charts.ChartHiddenDimensionStrategy.SHOW_BOTH)
+      
       .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
       .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
+      
       .setOption('height', 600)
       .setOption('width', 700) 
       .setPosition(9, 1, 0, 0).build(); 
