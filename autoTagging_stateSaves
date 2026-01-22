@@ -4,7 +4,7 @@
  * 
  * v2.8.1: add Admin menu option to initialize sheet
  * 
- * * CHANGELOG v2.8.0:
+ * * CHANGELOG v2.8.3:
  * 1. MOVING DATA: All keyword lists (IgnorePhrases, AutoSELead, etc.) are now read from the "Filter Lists" sheet.
  * 2. CONFIG CLEANUP: The "Config" sheet now only holds TRUE/FALSE toggles for these lists.
  * 3. LOGIC UPDATE: The script now checks the Toggle (Config) AND the List (Filter Lists) before applying a filter.
@@ -19,7 +19,7 @@
  */
 
 // =================================================================
-// #region 1. SPREADSHEET UI & MENU CREATION (v2.8.3 - Added Untagged Repair)
+// #region 1. SPREADSHEET UI & MENU CREATION (v2.9.0 - Added Untagged Repair)
 // =================================================================
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
@@ -125,7 +125,7 @@ function refreshUntaggedList() {
 // #region 3. CORE LOGIC FUNCTIONS (v3.12.0 - Null Safety Fix)
 // =================================================================
 
-function findEventsMissingTag() {
+function findEventsMissingTag(forcedUserEmail = null) { // Accept optional argument
     const file = SpreadsheetApp.getActiveSpreadsheet();
     try {
         // --- 1. CONFIGURATION ---
@@ -214,8 +214,25 @@ function findEventsMissingTag() {
         }
         
         // --- 4. FETCH EVENTS ---
-        const calendarId = CalendarApp.getDefaultCalendar().getId();
-        const userEmail = Session.getActiveUser().getEmail().toLowerCase();
+        
+        // 1. Determine User Identity
+        // Use the passed argument if available, otherwise fall back to ActiveUser
+        const userEmail = (forcedUserEmail || Session.getActiveUser().getEmail()).toLowerCase();
+        
+        // 2. Get the Specific Calendar for that User
+        // getDefaultCalendar() relies on context; getCalendarById(email) is explicit.
+        let calendarId;
+        try {
+            // Try fetching the calendar specifically by the user's email ID
+            const cal = CalendarApp.getCalendarById(userEmail);
+            if (!cal) throw new Error("Calendar not found");
+            calendarId = cal.getId();
+        } catch (e) {
+            // Fallback if direct ID fails (rare)
+            calendarId = CalendarApp.getDefaultCalendar().getId();
+        }
+       // OLD LOGIC const calendarId = CalendarApp.getDefaultCalendar().getId();
+       // OLD LOGIC const userEmail = Session.getActiveUser().getEmail().toLowerCase();
         let allEvents = [], pageToken = null;
         do {
           const response = Calendar.Events.list(calendarId, { timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 2500, pageToken: pageToken });
