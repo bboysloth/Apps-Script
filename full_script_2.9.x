@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.5
+ * @file Meeting Tagger Tool v2.9.6
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -26,6 +26,7 @@
  * v2.9.4 --- added gCal Labels in Tags Sheet
  *    --- added strict REGEX so that 'trial doesn't match on words like 'industrial'
  * v2.9.5 --- backup existing Filter Lists and Tags when 'repairing' a sheet
+ * v2.9.6 --- added user-defined LocationExclusions for removing suggestions of 'InPerson' on location keywords
  */
 
 // =================================================================
@@ -165,7 +166,7 @@ function refreshUntaggedList() {
 
 function findEventsMissingTag(forcedUserEmail = null) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const file = ss; // Alias for compatibility
+  const file = ss; 
   try {
     // --- 1. CONFIGURATION ---
     const daysBack = parseInt(getConfig("DaysBack"), 10);
@@ -175,13 +176,10 @@ function findEventsMissingTag(forcedUserEmail = null) {
 
     // Lists (Parsed for "Smart Matching")
     const ignorePhrasesRules = _parseMatchRule(_getFilterList("IgnorePhrases").join(","));
-    
-    // Exact lists remain literal
     const ignoreExactList = _getFilterList("IgnoreExactTitles");
     const ignoreFromEmailsList = _getFilterList("IgnoreFromEmails").map(s => s.toLowerCase());
     const ignoreToEmailsList = _getFilterList("IgnoreToEmails").map(s => s.toLowerCase());
 
-    // Toggles
     const useIgnorePhrases = (getConfig("IgnorePhrases") || "false").toString().toLowerCase() === "true";
     const useIgnoreExact = (getConfig("IgnoreExactTitles") || "false").toString().toLowerCase() === "true";
     const useIgnoreFrom = (getConfig("IgnoreFromEmails") || "false").toString().toLowerCase() === "true";
@@ -190,7 +188,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
     const useAutoSeCover = (getConfig("AutoSECoverageKeywords") || "false").toString().toLowerCase() === "true"; 
     const useAutoInPerson = (getConfig("AutoInPersonKeywords") || "false").toString().toLowerCase() === "true";
 
-    // Settings
     const includeAllDayEvents = (getConfig("IncludeAllDayEvents") || "false").toString().toLowerCase() === "true";
     const externalFilter = (getConfig("ExternalAttendees") || "false").toString().toLowerCase() === "true";
     const filterForMissingSETags = (getConfig("FilterForMissingSETags") || "false").toString().toLowerCase() === "true"; 
@@ -205,7 +202,10 @@ function findEventsMissingTag(forcedUserEmail = null) {
     const tagPrefix = "Verkada Meeting Tag: ";
     const attendanceFilter = getConfig("AttendanceFilter");
     
+    // THESE VIRTUAL EXCLUSIONS ARE HARDCODED TO IGNORE ZOOM ROOMS/ETC FROM SUGGESTING AN IN-PERSON CHECKBOX
     const virtualExclusions = ["teams", "zoom", "webex", "online", "call", "gmeet", "meet.google"];
+    // NEW --- v2.9.6: Added User-defined exclusions list option in addition to virtualExclusions
+    const locationExclusions = _getFilterList("LocationExclusions").map(s => s.toLowerCase());
 
     // --- 2. PREPARE TAG DATA (WATERFALL LOGIC) ---
     const tagsSheet = file.getSheetByName("Tags");
@@ -289,40 +289,17 @@ function findEventsMissingTag(forcedUserEmail = null) {
         let durationInMinutes = 0;
         let nightsCount = 0;
         
-        // --- TEXT PREP (Title/Desc) ---
         const titleRaw = event.summary || "";
-        
-        // CLEANUP STEP 1: Title Search Preparation
-        // 1. Remove URLs
-        // 2. Remove "Long Words" (>50 chars) which are likely tokens/base64/broken links
-        const titleSearch = titleRaw
-             .replace(/(https?:\/\/[^\s]+)/g, '')
-             .replace(/\S{50,}/g, '') 
-             .toLowerCase();
-        
-        let descRaw = (event.description || "")
-             .replace(/<br\s*\/?>/gi, '\n')
-             .replace(/<p>/gi, '\n')
-             .replace(/<\/p>/gi, '\n')
-             .replace(/<(?!(?:https?|tel):)[^>]*>/gi, ''); 
-        
-        // CLEANUP STEP 2: Description Search Preparation
-        // Same logic: Strip URLs, then strip massive text blobs
-        const descSearch = descRaw
-             .replace(/(https?:\/\/[^\s]+)/g, '')
-             .replace(/\S{50,}/g, '')
-             .toLowerCase();
-             
+        const titleSearch = titleRaw.replace(/(https?:\/\/[^\s]+)/g, '').replace(/\S{50,}/g, '').toLowerCase();
+        let descRaw = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<(?!(?:https?|tel):)[^>]*>/gi, ''); 
+        const descSearch = descRaw.replace(/(https?:\/\/[^\s]+)/g, '').replace(/\S{50,}/g, '').toLowerCase();
         const fullSearch = titleSearch + " " + descSearch;
 
-        // --- NEW: Capture Calendar Color ID ---
         const eventColorId = event.colorId || "";
-        // --------------------------------------
 
         if (event.start.date) {
             if (!includeAllDayEvents) continue; 
             const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
-            
             const isTrip = _isMatch(fullSearch, nightsAwayRules);
 
             if (isMyEvent && isTrip) {
@@ -340,7 +317,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
 
         if (!titleRaw) continue;
         
-        // --- FILTER LIST LOGIC ---
         if (useIgnoreExact && ignoreExactList.includes(titleRaw)) continue;
         if (useIgnorePhrases && _isMatch(titleSearch, ignorePhrasesRules)) continue;
         
@@ -369,8 +345,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
         }
         
         const hasMainTag = descRaw.includes(tagPrefix);
-        
-        // Parse Existing Tags
         let originalSeLead = seLeadTagText ? descRaw.includes(seLeadTagText) : false;
         let originalSeCover = seCoverTagText ? descRaw.includes(seCoverTagText) : false;
         let originalInPerson = false;
@@ -383,10 +357,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
             if (tagLine) {
                 hasSETagInDescription = tagLine.includes("(SE)");
                 let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
-                
-                if (modifier && rawContent.includes(modifier)) {
-                  originalInPerson = true;
-                }
+                if (modifier && rawContent.includes(modifier)) { originalInPerson = true; }
                 let lookupKey = rawContent.replace(modifier, "").replace(/;/g, "").trim();
                 originalTag = tagMap.get(lookupKey) || "";
             }
@@ -399,21 +370,21 @@ function findEventsMissingTag(forcedUserEmail = null) {
 
         if (locationFilterEnabled && event.location) {
             const locationLower = event.location.toLowerCase();
-            const isVirtual = virtualExclusions.some(keyword => locationLower.includes(keyword));
-            if (!isVirtual && locationLower.trim() !== "") {
+            
+            // --- UPDATED LOCATION CHECK --- v2.9.6
+            // Combine hardcoded "Virtual" words with user-defined "Exclusions"
+            const allLocationBlockers = [...virtualExclusions, ...locationExclusions];
+            const isBlockedLocation = allLocationBlockers.some(keyword => locationLower.includes(keyword));
+            
+            if (!isBlockedLocation && locationLower.trim() !== "") {
                 if (locationRequiresExternal && !hasExternalAttendee) {
-                } else {
-                    suggestedInPerson = true;
-                }
+                } else { suggestedInPerson = true; }
             }
         }
 
-        // --- CORE MATCHING LOGIC (WATERFALL) ---
         let tagFound = false;
-
         for (const rule of tagWaterfall) {
             let isMatch = false;
-            // Uses the cleaned 'descSearch' (with URLs/Tokens removed)
             if (rule.checkTitle && _isMatch(titleSearch, rule.rules)) isMatch = true;
             else if (rule.checkDesc && _isMatch(descSearch, rule.rules)) isMatch = true;
 
@@ -426,10 +397,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
 
         if (useAutoSeLead && _isMatch(fullSearch, autoSeLeadRules)) suggestedSeLead = true;
         if (useAutoSeCover && _isMatch(fullSearch, autoSeCoverRules)) suggestedSeCover = true;
-        
-        if (suggestedTag && useAutoInPerson && _isMatch(fullSearch, autoInPersonRules)) {
-            suggestedInPerson = true;
-        }
+        if (suggestedTag && useAutoInPerson && _isMatch(fullSearch, autoInPersonRules)) { suggestedInPerson = true; }
 
         const eventStartTime = new Date(event.start.dateTime || event.start.date);
         
@@ -442,7 +410,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
             originalSeCover, originalSeLead, originalInPerson, originalTag,
             durationInMinutes, 
             nightsCount,
-            eventColorId // <--- Added Color ID to Row Data
+            eventColorId 
         ];
         
         if (showTaggedMeetings) {
@@ -467,7 +435,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
           range.setWrap(false);
     }
     
-    // UPDATED: Added "Current Color ID" header
     const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Cover", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original Cover", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights", "Current Color ID"];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     
@@ -485,9 +452,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
     
     _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { filterForMissingSETags, showTaggedMeetings, externalFilter });
     
-    // NEW: Hide the extra column we just added
     sheet.hideColumns(18, 1);
-    
     updateTagDropdownsAndColors(true); 
     
   } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
@@ -1674,6 +1639,10 @@ function repairUntaggedSheet() {
 
 function repairConfigSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. Backup <-- Commented out in v2.9.6 as unnecessary step
+  // _backupOldSheet("Config"); 
+
   let configSheet = ss.getSheetByName("Config");
   if (!configSheet) configSheet = ss.insertSheet("Config");
   
@@ -1682,22 +1651,14 @@ function repairConfigSheet() {
   // Base Configuration Data
   let configData = [];
 
-  // ==========================================================================================
-  // --- [OPTIONAL] SFDC SE NAME DROPDOWN BLOCK (START) ---
-  // Delete everything between START and END if moving to a tool without the SFDC sheet.
-  // This inserts "SE Name" at the very top (Row 2).
-  
+  // [OPTIONAL] SFDC SE NAME DROPDOWN BLOCK
   configData.push({ 
       key: "SE Name", 
-      val: "", // Default value is empty, user selects from dropdown
+      val: "", 
       desc: "Select your name to see SFDC meetings on the 'SE Radar' Tabs", 
-      type: "se_name_dropdown" // Special type handled below
+      type: "se_name_dropdown" 
   });
-  
-  // --- [OPTIONAL] SFDC SE NAME DROPDOWN BLOCK (END) ---
-  // ==========================================================================================
 
-  // Standard Configuration Data
   const standardConfig = [
     { key: "MinutesInterval", val: 30, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
     { key: "QuarterOverride", val: "None", desc: "When selected, start/end dates align with Verkada's FY dates. API restricts edits to about 2 quarters in the past\n**Selecting 'None' allows you to to use 'DaysBack' and 'DaysAhead' logic", type: "quarter_dropdown" },
@@ -1715,9 +1676,13 @@ function repairConfigSheet() {
     { key: "LocationSetsInPerson", val: true, desc: "CHECKED: Suggests an 'In Person' tag on any meeting containing a physical address/location\nUNCHECKED: Does NOT suggest an 'In Person' tag on meetings containing a location", type: "checkbox" },
     { key: "LocationRequiresExternal", val: true, desc: "CHECKED: Location-based 'In Person' suggestions ONLY occur if an External Attendee is present (Filters out internal conference rooms).\nUNCHECKED: Any physical location triggers an 'In Person' suggestion.", type: "checkbox" },
     
-    { key: "AutoInPersonKeywords", val: true, desc: `Scan the full title + description against your AutoInPersonKeywords Filter list. If it finds a match, it will check the 'In Person' checkbox as a suggested calendar event tag MODIFIER. Comma-delimited`, type: "checkbox" },
-    { key: "AutoSELeadKeywords", val: true, desc: `Scan the full title + description against your AutoSELeadKeywords Filter list. If it finds a match, it will check the 'SE Lead' checkbox as a suggested calendar event tag edit. Comma-delimited`, type: "checkbox" },
-    { key: "AutoSECoverageKeywords", val: true, desc: `Scan the full title + description against your AutoSECoverageKeywords Filter list. If it finds a match, it will check the 'SE Cover' checkbox as a suggested calendar event tag edit. Comma-delimited`, type: "checkbox" }, 
+    // --- NEW ITEM START --- v2.9.6
+    { key: "LocationExclusions", val: true, desc: "CHECKED: If a meeting location contains a word from the LocationExclusions Filter List (e.g. 'Room 404'), the 'In Person' tag will NOT be suggested \nUNCHECKED: Filter List is ignored", type: "checkbox" },
+    // --- NEW ITEM END ---
+
+    { key: "AutoInPersonKeywords", val: true, desc: `Scan the full title + description against your AutoInPersonKeywords Filter list.\nIf it finds a match, it will check the 'In Person' checkbox as a suggested calendar event tag MODIFIER`, type: "checkbox" },
+    { key: "AutoSELeadKeywords", val: true, desc: `Scan the full title + description against your AutoSELeadKeywords Filter list.\nIf it finds a match, it will check the 'SE Lead' checkbox as a suggested calendar event tag MODIFIER`, type: "checkbox" },
+    { key: "AutoSECoverageKeywords", val: true, desc: `Scan the full title + description against your AutoSECoverageKeywords Filter list.\nIf it finds a match, it will check the 'SE Cover' checkbox as a suggested calendar event tag MODIFIER`, type: "checkbox" }, 
     
     { key: "FilterForMissingSETags", val: false, desc: "CHECKED: Show only meetings with no tag, and meetings that have an AE/SFDC implemented tags.\nUNCHECKED: HIDES meetings with any tag (AE/SFDC OR SE Tags)\n**Results will populate with YELLOW if the meeting is missing a ('SE') Tag, and RED if the meeting has NO Tags at all.", type: "checkbox" },
     { key: "ShowTaggedMeetings", val: true, desc: "CHECKED: Displays all tagged meetings (with GREEN) allowing for editing past tagged events\noverrides 'FilterForMissingSETags' behavior to hide \"(SE)\" tagged meetings", type: "checkbox" },
@@ -1725,7 +1690,7 @@ function repairConfigSheet() {
     
     { key: "InPersonModifier", val: "-P", desc: "This modifier is added to a meeting type if you are In Person instead of joining Virtually.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
     { key: "SELeadTagText", val: "Verkada SE Lead;", desc: "This denotes the text added to a meeting type if you lead the call.\nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
-    { key: "SECoverageTagText", val: "Verkada SE Coverage;", desc: "Text added to description when 'SE Cover' is checked.", type: "text" },
+    { key: "SECoverageTagText", val: "Verkada SE Coverage;", desc: "This denotes the text added to description when 'SE Cover' is checked. \nThis should not need to be changed but has been put here incase logic changes with Meeting Tags in the future", type: "text" },
     { key: "AttendanceFilter", val: "Show Only Accepted/Maybe", desc: "\"Show Only Accepted/Maybe\" = filter by attendance status: \"accepted\", \"tentative\" (Maybe), \"organizer\"\n\"Show All Meetings\" = All meetings are shown -- including declined meetings.", type: "attendance_dropdown" }
   ];
 
@@ -1778,47 +1743,30 @@ function repairConfigSheet() {
       const options = ["Show Only Accepted/Maybe", "Show All Meetings"];
       cell.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).build());
     } 
-    // --- [OPTIONAL] SE NAME DROPDOWN LOGIC ---
     else if (type === "se_name_dropdown") {
-      // Safely check if the source sheet exists
       const sfdcSheet = ss.getSheetByName("SFDC - Tagged SE Radar Meetings") || ss.getSheetByName("SFDC - Tagged SE Radar Meeting");
-      
       if (sfdcSheet) {
           const lastRow = sfdcSheet.getLastRow();
-          // Ensure there is data to create a dropdown from
           if (lastRow >= 3) {
-              // 1. ATTEMPT TO SORT THE SOURCE SHEET
-              // Since the list is >500 items, we must verify the sheet itself is sorted.
-              // We sort the entire data range to keep rows aligned.
               try {
                   const fullDataRange = sfdcSheet.getRange(3, 1, lastRow - 2, sfdcSheet.getLastColumn());
                   fullDataRange.sort({column: 1, ascending: true});
-              } catch (e) {
-                  // Note: If Column A is populated by a spreadsheet FORMULA (e.g., =IMPORTRANGE),
-                  // this sort command will fail or do nothing. 
-                  // In that case, you must wrap your spreadsheet formula in =SORT(...) directly.
-              }
-
-              // 2. APPLY VALIDATION "FROM RANGE"
-              // This bypasses the 500-item limit.
+              } catch (e) { }
               const range = sfdcSheet.getRange("A3:A");
               const rule = SpreadsheetApp.newDataValidation()
                   .requireValueInRange(range)
                   .build();
-              
               cell.setDataValidation(rule);
           }
       }
     }
-    // -----------------------------------------
     else {
       cell.clearDataValidations();
     }
   }
 
-  // --- 2. RESTORE TAB ORDER ---
-  repairSheetStructure(); 
-  // ----------------------------
+  // 2. Restore Order
+  repairSheetStructure();
 
   ss.toast("Config sheet repaired.");
 }
@@ -1834,13 +1782,27 @@ function repairFilterSheet() {
   
   filterSheet.clear();
 
-  const syncFormula = `=TRANSPOSE(QUERY(Config!A:A, "SELECT A WHERE A IS NOT NULL AND (A CONTAINS 'Keywords' OR A CONTAINS 'Ignore' OR A CONTAINS 'Location') AND A != 'AttendanceFilter' AND A != 'FilterForMissingSETags' AND A != 'LocationSetsInPerson' AND A != 'LocationRequiresExternal' AND A != 'SE Name'", 0))`;
-  filterSheet.getRange("A1").setFormula(syncFormula);
+  // --- DEFINED ORDER ---
+  // We explicitly define the order here so Headers and Data ALWAYS match.
+  const definedOrder = [
+    "IgnorePhrases",
+    "IgnoreExactTitles",
+    "IgnoreFromEmails",
+    "IgnoreToEmails",
+    "NightsAwayKeywords",
+    "AutoInPersonKeywords",
+    "AutoSELeadKeywords",
+    "AutoSECoverageKeywords",
+    "LocationExclusions" // v2.9.6
+  ];
+
+  // 2. Set Headers Directly
+  filterSheet.getRange(1, 1, 1, definedOrder.length).setValues([definedOrder]);
   filterSheet.getRange("1:1").setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
               .setFontFamily("Poppins").setVerticalAlignment("middle");
   filterSheet.setFrozenRows(1);
 
-  // Define Defaults (Used if no backup is found)
+  // 3. Define Defaults
   const filterDefaults = {
     "IgnorePhrases":        [""], 
     "IgnoreExactTitles":    [""], 
@@ -1849,41 +1811,27 @@ function repairFilterSheet() {
     "NightsAwayKeywords":   ["hotel", "trip", "stay"],  
     "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], 
     "AutoSELeadKeywords":   [""],
-    "AutoSECoverageKeywords": [""] 
+    "AutoSECoverageKeywords": [""],
+    "LocationExclusions":   ["room", "huddle", "phone booth", "conf", "internal"] // v2.9.6
   };
 
-  const defaultColumns = [
-    filterDefaults["IgnorePhrases"],
-    filterDefaults["IgnoreExactTitles"],
-    filterDefaults["IgnoreFromEmails"],
-    filterDefaults["IgnoreToEmails"],
-    filterDefaults["NightsAwayKeywords"],
-    filterDefaults["AutoInPersonKeywords"],
-    filterDefaults["AutoSELeadKeywords"],
-    filterDefaults["AutoSECoverageKeywords"]
-  ];
+  // 4. Map Defaults to the Defined Order
+  const defaultColumns = definedOrder.map(key => filterDefaults[key]);
 
   // --- SMART RESTORE LOGIC ---
   const backupSheet = ss.getSheetByName("OLD Filter Lists");
   if (backupSheet) {
     try {
-      // 1. Map Old Headers to Column Indices
       const oldHeaders = backupSheet.getRange(1, 1, 1, backupSheet.getLastColumn()).getValues()[0];
       const headerMap = new Map();
-      oldHeaders.forEach((h, i) => headerMap.set(h.toString().trim(), i + 1)); // 1-based index
+      oldHeaders.forEach((h, i) => headerMap.set(h.toString().trim(), i + 1)); 
 
-      // 2. Overwrite defaultColumns with Old Data where matched
-      // We iterate the keys of filterDefaults (which represent the NEW sheet structure)
-      const keys = Object.keys(filterDefaults); // e.g., ["IgnorePhrases", "IgnoreExactTitles"...]
-      
-      keys.forEach((key, idx) => {
+      definedOrder.forEach((key, idx) => {
          if (headerMap.has(key)) {
             const colIdx = headerMap.get(key);
             const lastRow = backupSheet.getLastRow();
             if (lastRow > 1) {
-                // Get the data from the old column
                 const oldData = backupSheet.getRange(2, colIdx, lastRow - 1, 1).getValues().flat();
-                // Replace the default array with this restored array
                 defaultColumns[idx] = oldData;
             }
          }
@@ -1893,8 +1841,8 @@ function repairFilterSheet() {
       console.log("Filter Restore Error: " + e.message);
     }
   }
-  // ---------------------------
 
+  // 5. Write Data
   const maxRows = Math.max(...defaultColumns.map(col => col.length));
   
   const finalFilterData = [];
@@ -1912,7 +1860,17 @@ function repairFilterSheet() {
   
   repairSheetStructure();
 
-  ss.toast("Filter Lists sheet repaired.");
+  // --- 6. RESIZE COLUMNS WITH BUFFER ---
+  // First, auto-resize to fit the text
+  filterSheet.autoResizeColumns(1, definedOrder.length);
+
+  // Then, add the 7px buffer to every column
+  for (let c = 1; c <= definedOrder.length; c++) {
+      const currentWidth = filterSheet.getColumnWidth(c);
+      filterSheet.setColumnWidth(c, currentWidth + 25); 
+  }
+
+  ss.toast("Filter Lists sheet repaired (Columns resized).");
 }
 
 function repairTagsSheet() {
@@ -1988,6 +1946,7 @@ function repairTagsSheet() {
 
   tagsSheet.getRange("A:Z").setFontFamily("Poppins").setVerticalAlignment("middle");
   tagsSheet.setFrozenRows(1);
+  tagsSheet.setColumnWidth(1,10); // Column A
   tagsSheet.setColumnWidth(2, 200); 
   tagsSheet.setColumnWidth(3, 300); 
   tagsSheet.setColumnWidth(5, 300); 
