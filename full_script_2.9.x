@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.3
+ * @file Meeting Tagger Tool v2.9.5
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -22,7 +22,10 @@
  *
  * v2.9.1 --- added Discrepancy Check Table to see Calendar vs Radar Events 
  * v2.9.2 --- added Instructions Tab
- * v2.9.3 --- added Hidden RADAR sheet
+ * v2.9.3 --- added Hidden RADAR sheet as well as other 2 RADAR Sheets
+ * v2.9.4 --- added gCal Labels in Tags Sheet
+ *    --- added strict REGEX so that 'trial doesn't match on words like 'industrial'
+ * v2.9.5 --- backup existing Filter Lists and Tags when 'repairing' a sheet
  */
 
 // =================================================================
@@ -31,7 +34,7 @@
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Meeting Tools')
-    .addItem('Save and Refresh Untagged List', 'findEventsMissingTag')
+    .addItem('Save Config and Refresh Untagged List', 'findEventsMissingTag')
     .addSeparator()
     .addItem('Apply Changes to Calendar', 'applyBatchChanges')
     .addSeparator()
@@ -46,16 +49,40 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Admin: Initialize/Repair Sheets')
         .addItem('Initialize ALL Sheets (Full Reset)', 'initializeAllSheets')
         .addSeparator()
+        .addItem('Repair "Instructions" Sheet Only', 'repairInstructionsSheet') //NEW v2.9.2
         .addItem('Repair "Untagged Meetings" Sheet Only', 'repairUntaggedSheet')
         .addItem('Repair "Config" Sheet Only', 'repairConfigSheet')
-        .addItem('Repair "Tags" Sheet Only', 'repairTagsSheet')
         .addItem('Repair "Filter Lists" Sheet Only', 'repairFilterSheet')
-        .addItem('Repair "Instructions" Sheet Only', 'repairInstructionsSheet') //NEW v2.9.2
-        .addItem('Repair "SE Radar Meetings" Sheet Only', 'repairRadarMainSheet') // NEW v2.9.5
-        .addItem('Repair "All SE Radar Meetings CFQ" Sheet Only', 'repairRadarFilteredSheet')  // NEW v2.9.4
+        .addItem('Repair "Tags" Sheet Only', 'repairTagsSheet')
+        .addSeparator()
+
+        .addItem('Repair "SE Radar Meetings" Sheet Only', 'repairRadarMainSheet') // NEW v2.9.3
+        .addItem('Repair "All SE Radar Meetings CFQ" Sheet Only', 'repairRadarFilteredSheet')  // NEW v2.9.3
         .addItem('Repair "SFDC Radar Master" Sheet Only', 'repairRadarImportSheet')) // NEW v2.9.3
     .addToUi();
 }
+// #endregion
+
+// =================================================================
+// #region 1a. Google Calendar Event Lables Table (CONSTANT) - (v2.9.4)
+// =================================================================
+
+// Google Calendar Color ID Mapping
+const EVENT_COLOR_MAP = {
+  "Lavender": "1",
+  "Sage": "2",
+  "Grape": "3",
+  "Flamingo": "4",
+  "Banana": "5",
+  "Tangerine": "6",
+  "Peacock": "7",
+  "Graphite": "8",
+  "Blueberry": "9",
+  "Basil": "10",
+  "Tomato": "11",
+  "Default": "" 
+};
+
 // #endregion
 
 // =================================================================
@@ -288,6 +315,10 @@ function findEventsMissingTag(forcedUserEmail = null) {
              
         const fullSearch = titleSearch + " " + descSearch;
 
+        // --- NEW: Capture Calendar Color ID ---
+        const eventColorId = event.colorId || "";
+        // --------------------------------------
+
         if (event.start.date) {
             if (!includeAllDayEvents) continue; 
             const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
@@ -401,6 +432,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
         }
 
         const eventStartTime = new Date(event.start.dateTime || event.start.date);
+        
         const rowData = [
             titleRaw, eventStartTime, organizerEmail, hasExternalAttendee, 
             suggestedSeCover, suggestedSeLead, suggestedInPerson, suggestedTag, 
@@ -409,7 +441,8 @@ function findEventsMissingTag(forcedUserEmail = null) {
             '', 
             originalSeCover, originalSeLead, originalInPerson, originalTag,
             durationInMinutes, 
-            nightsCount 
+            nightsCount,
+            eventColorId // <--- Added Color ID to Row Data
         ];
         
         if (showTaggedMeetings) {
@@ -434,7 +467,8 @@ function findEventsMissingTag(forcedUserEmail = null) {
           range.setWrap(false);
     }
     
-    const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Cover", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original Cover", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights"];
+    // UPDATED: Added "Current Color ID" header
+    const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Cover", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original Cover", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights", "Current Color ID"];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     
     const finalList = [...noTagMeetings, ...aeTaggedMeetings, ...fullyTaggedMeetings];
@@ -451,6 +485,9 @@ function findEventsMissingTag(forcedUserEmail = null) {
     
     _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { filterForMissingSETags, showTaggedMeetings, externalFilter });
     
+    // NEW: Hide the extra column we just added
+    sheet.hideColumns(18, 1);
+    
     updateTagDropdownsAndColors(true); 
     
   } catch (e) { SpreadsheetApp.getUi().alert(e.message); }
@@ -463,7 +500,6 @@ function updateMeetingTag(e, isSingleEditMode) {
     if (isSingleEditMode) {
       const range = e.range;
       if (range.getRow() <= 1) return;
-      const editedCol = range.getColumn();
       const sheetName = sheet.getName();
       if (sheetName !== "Untagged Meetings") return;
       return; 
@@ -480,11 +516,15 @@ function updateMeetingTag(e, isSingleEditMode) {
     if (lastRow < 2) { ss.toast("No data to process."); return; }
     
     const tagsSheet = ss.getSheetByName("Tags");
-    const tagsRaw = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
+    // UPDATED: Now reading up to Column H (index 7 in 0-based array) to get Color Name
+    const tagsRaw = tagsSheet.getRange("B2:H" + tagsSheet.getLastRow()).getValues();
     const validTags = tagsRaw.filter(row => row[2] && row[2].trim() !== "");
+    
     const tagMap = new Map(validTags.map(row => [row[1], row[2]])); 
+    // NEW: Map Tag Name -> Color Name (Col H is index 6 relative to B2:H)
+    const tagColorMap = new Map(validTags.map(row => [row[1], row[6]])); 
 
-    const sheetData = sheet.getRange(2, 1, lastRow - 1, 17).getValues(); 
+    const sheetData = sheet.getRange(2, 1, lastRow - 1, 18).getValues(); 
     
     const userEmail = Session.getActiveUser().getEmail();
     let calendarId;
@@ -512,7 +552,7 @@ function updateMeetingTag(e, isSingleEditMode) {
 
     const rowsToDelete = [];
     let updatedCount = 0;
-    let errorCount = 0; // Track permission errors
+    let errorCount = 0; 
     
     for (let i = 0; i < sheetData.length; i++) {
       const rowData = sheetData[i];
@@ -524,8 +564,25 @@ function updateMeetingTag(e, isSingleEditMode) {
       const originalSeLead = rowData[12];
       const originalInPerson = rowData[13];
       const originalTag = rowData[14];
+      
+      // NEW: Retrieve stored color ID from hidden Col R
+      const originalColorId = rowData[17] ? String(rowData[17]) : "";
 
-      const hasChanged = (currentSeCover !== originalSeCover) || (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag);
+      // Check if text changed OR if color needs update
+      let needsColorUpdate = false;
+      let targetColorId = originalColorId;
+
+      if (currentTag && currentTag.trim() !== "" && currentTag !== "<Clear Tag>") {
+          const colorName = tagColorMap.get(currentTag);
+          if (colorName && EVENT_COLOR_MAP.hasOwnProperty(colorName)) {
+             targetColorId = EVENT_COLOR_MAP[colorName];
+             if (targetColorId !== originalColorId) {
+                needsColorUpdate = true;
+             }
+          }
+      }
+
+      const hasChanged = (currentSeCover !== originalSeCover) || (currentSeLead !== originalSeLead) || (currentInPerson !== originalInPerson) || (currentTag !== originalTag) || needsColorUpdate;
 
       if (hasChanged) {
         const title = rowData[0];
@@ -542,22 +599,15 @@ function updateMeetingTag(e, isSingleEditMode) {
           description = description.replace(new RegExp(tagPrefix + ".*", 'gi'), '');
 
           description = description.trim();
-
           const isHtml = /<(?!(?:https?|tel):)[a-z][\s\S]*>/i.test(description);
           const breakChar = isHtml ? "<br>" : "\n";
 
-          if (currentSeLead && seLeadTag) {
-             description += breakChar + breakChar + seLeadTag;
-          }
-          if (currentSeCover && seCoverTag) {
-             description += breakChar + seCoverTag; 
-          }
+          if (currentSeLead && seLeadTag) description += breakChar + breakChar + seLeadTag;
+          if (currentSeCover && seCoverTag) description += breakChar + seCoverTag; 
           
           if (currentTag && currentTag.trim() !== "" && currentTag !== "<Clear Tag>") {
             let abbreviatedTag = tagMap.get(currentTag); 
-            if (!abbreviatedTag) { 
-              continue; 
-            }
+            if (!abbreviatedTag) continue; 
             
             if (currentInPerson && abbreviatedTag) {
                 let parts = abbreviatedTag.split(';').map(s => s.trim()).filter(s => s !== "");
@@ -572,16 +622,22 @@ function updateMeetingTag(e, isSingleEditMode) {
             description += breakChar + breakChar + tagPrefix + abbreviatedTag;
           }
           
-          // --- SAFETY BLOCK: Prevent Service Account Crashes ---
           try {
+              // 1. Update Description
               Calendar.Events.patch({ description: description }, calendarId, eventToUpdate.id, { sendUpdates: "none" });
+              
+              // 2. NEW: Update Color (if required)
+              if (needsColorUpdate) {
+                  // We must use 'patch' with the specific colorId field
+                  Calendar.Events.patch({ colorId: targetColorId }, calendarId, eventToUpdate.id);
+              }
+
               rowsToDelete.push(i + 2);
               updatedCount++;
           } catch (e) {
               console.log(`Permission Error patching event "${title}": ${e.message}`);
               errorCount++;
           }
-          // ----------------------------------------------------
         }
       }
     }
@@ -640,24 +696,67 @@ function _parseMatchRule(rawString) {
 }
 
 /**
- * MATCHER: Checks text against parsed rules.
+ * LAZY MATCHER (v2.9.3): Checks text against parsed rules.
  * Returns TRUE if (Keyword is Found) AND (None of the Excludes are Found).
+ */
+/** OLD LAZY LOGIC ("trial matches: trial, trials, indus'trial'")
+ * function _isMatch(text, rules) {
+ * if (!text || !rules || rules.length === 0) return false;
+ * for (const rule of rules) {
+ *   // 1. Check Keyword
+ *  if (text.includes(rule.keyword)) {
+ *       // 2. Check Exclusions
+ *       let isExcluded = false;
+ *       if (rule.excludes.length > 0) {
+ *           for (const excl of rule.excludes) {
+ *               if (text.includes(excl)) {
+ *                   isExcluded = true;
+ *                   break;
+ *               }
+ *           }
+ *       }
+ *       // If keyword matched and NOT excluded, we have a winner.
+ *       if (!isExcluded) return true;
+ *   }
+ * }
+ * return false;
+ *
+* }
+*/
+
+/**
+ * STRICT MATCHER (v2.9.4): Checks text against parsed rules using WORD BOUNDARIES.
+ * FIX: Now matches "trial" but ignores "industrial".
+ * NOTE: "trial" will no longer match "trials" (plurals must be added to keyword list).
  */
 function _isMatch(text, rules) {
   if (!text || !rules || rules.length === 0) return false;
+
   for (const rule of rules) {
-    // 1. Check Keyword
-    if (text.includes(rule.keyword)) {
+    // Escape special regex characters (like +, ?, .) to prevent errors
+    const escapedKeyword = rule.keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // Create a Regex with Word Boundaries (\b)
+    // \b matches start/end of string, spaces, punctuation, etc.
+    const regex = new RegExp(`\\b${escapedKeyword}\\b`, 'i');
+
+    // 1. Check Keyword (Whole Word Only)
+    if (regex.test(text)) {
+        
         // 2. Check Exclusions
         let isExcluded = false;
         if (rule.excludes.length > 0) {
             for (const excl of rule.excludes) {
+                // We typically keep exclusions as substring matches (more aggressive safety)
+                // But if you want exact word exclusions too, we can apply regex here as well.
+                // For now, let's stick to .includes() for exclusions to be safe (e.g. exclude "internal" blocks "internal-review")
                 if (text.includes(excl)) {
                     isExcluded = true;
                     break;
                 }
             }
         }
+        
         // If keyword matched and NOT excluded, we have a winner.
         if (!isExcluded) return true;
     }
@@ -700,6 +799,39 @@ function _getFilterList(listName) {
   if (colIndex === -1) return []; 
   const columnData = listSheet.getRange(2, colIndex + 1, listSheet.getLastRow() - 1, 1).getValues();
   return columnData.flat().filter(String).map(value => value.toString().trim());
+}
+
+/**
+ * Safely renames an existing sheet to "OLD [Name]" to preserve data.
+ * If "OLD [Name]" already exists, it is deleted to prevent duplicates.
+ */
+function _backupOldSheet(sheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const currentSheet = ss.getSheetByName(sheetName);
+
+  if (currentSheet) {
+    const backupName = "OLD " + sheetName;
+    const existingBackup = ss.getSheetByName(backupName);
+
+    // 1. If an OLD version already exists, delete it (Nuclear option for the backup)
+    if (existingBackup) {
+      ss.deleteSheet(existingBackup);
+    }
+
+    // 2. Rename the current sheet to the backup name
+    currentSheet.setName(backupName);
+    
+    // 3. Visual formatting to indicate it is an archive
+    currentSheet.setTabColor("#cdcd00"); // Dark Gold color
+    
+    // 4. HIDE SHEET TOGGLE
+    // By default, we keep the backup visible so you can copy data easily.
+    // To make it HIDDEN automatically, simply remove the "//" from the start of the line below:
+    
+    // currentSheet.hideSheet();
+    
+    ss.toast(`Backed up existing '${sheetName}' to '${backupName}'`);
+  }
 }
 
 function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, configs) {
@@ -870,21 +1002,21 @@ function updateTagDropdownsAndColors(silentMode = false) {
     }
 
     const lastTagRow = tagsSheet.getLastRow();
-    // Read Tag Name (Col C) and Colors
-    const tagRawValues = tagsSheet.getRange("C2:C" + lastTagRow).getValues();
-    const tagRawBackgrounds = tagsSheet.getRange("C2:C" + lastTagRow).getBackgrounds();
+    // Read Tag Name (Col C), Colors, and now Label Colors (Col H)
+    const tagRawValues = tagsSheet.getRange("B2:H" + lastTagRow).getValues();
+    const tagRawBackgrounds = tagsSheet.getRange("B2:H" + lastTagRow).getBackgrounds();
     
     const tagNames = [["<Clear Tag>"]]; 
     const tagColors = [["#ffffff"]]; 
     
     for (let i = 0; i < tagRawValues.length; i++) {
-        if (tagRawValues[i][0] && tagRawValues[i][0].trim() !== "") {
-            tagNames.push([tagRawValues[i][0]]);
-            tagColors.push([tagRawBackgrounds[i][0]]);
+        if (tagRawValues[i][1] && tagRawValues[i][1].trim() !== "") {
+            tagNames.push([tagRawValues[i][1]]);
+            tagColors.push([tagRawBackgrounds[i][1]]);
         }
     }
 
-    // FIX: Target Column 8 (H)
+    // Target Column 8 (H) on Untagged Meetings
     const dropdownRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     dropdownRange.clearDataValidations();
 
@@ -902,7 +1034,6 @@ function updateTagDropdownsAndColors(silentMode = false) {
     mainSheet.clearConditionalFormatRules();
     let rules = [];
     
-    // FIX: Target Column 8 (H) for Rules
     const dropdownRangeForRules = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     tagNames.forEach((nameArr, i) => {
         if (nameArr[0] === "<Clear Tag>") {
@@ -912,7 +1043,7 @@ function updateTagDropdownsAndColors(silentMode = false) {
         }
     });
 
-    // Synced Status is now Column 9 (I)
+    // Synced Status is Column 9 (I)
     const syncedRange = mainSheet.getRange(2, 9, mainSheet.getMaxRows() - 1, 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
@@ -922,11 +1053,19 @@ function updateTagDropdownsAndColors(silentMode = false) {
     if (!silentMode) {
       ss.toast("Tag dropdowns and colors updated.");
       try {
-        const flagCell = tagsSheet.getRange("H1");
+        // 1. Set "SAVED" flag in I1
+        const flagCell = tagsSheet.getRange("I1");
         flagCell.setValue("SAVED")
                 .setBackground("#d9ead3") // Green
                 .setFontWeight("bold")
                 .setHorizontalAlignment("center");
+        
+        // 2. FIX: Ensure H1 says "Label Color" (instead of deleting it!)
+        tagsSheet.getRange("H1").setValue("Label Color")
+                 .setBackground("#283e4d")
+                 .setFontColor("white")
+                 .setFontWeight("bold");
+
       } catch (e) { }
     }
 }
@@ -963,15 +1102,15 @@ function onEditTagsSheet(e) {
   const sheet = e.range.getSheet();
   if (sheet.getName() === "Tags") {
     try {
-      const flagCell = sheet.getRange("H1");
+      const flagCell = sheet.getRange("I1");
       const flagValue = flagCell.getValue();
 
-      if (e.range.getA1Notation() === 'H1' && flagValue === "CHANGES DETECTED") {
+      if (e.range.getA1Notation() === 'I1' && flagValue === "CHANGES DETECTED") {
         updateTagDropdownsAndColors(false); 
         return; 
       }
       
-      if (e.range.getRow() > 1 && e.range.getColumn() >= 2 && e.range.getColumn() <= 7) { 
+      if (e.range.getRow() > 1 && e.range.getColumn() >= 2 && e.range.getColumn() <= 8) { 
           flagCell.setValue("CHANGES DETECTED")
                   .setBackground("#f4cccc") 
                   .setFontWeight("bold")
@@ -1464,9 +1603,12 @@ function repairInstructionsSheet() {
   const instructions = [
     ["Creating an Untagged Meeting List:"],
     ["- Configure your desired settings and filters on the 'Config' tab."],
-    ["- You can Update/Refresh your list via the 'Meeting Tools > Save and Refresh Untagged List' Menu Dropdown."],
+    ["- You can Update/Refresh your list via the 'Meeting Tools > Save Config and Refresh Untagged List' Menu Dropdown."],
     ["- Add keywords to the 'Filter Lists' and 'Tags' sheets for auto-tag suggestions. You will need to Refresh for those terms to be included"],
-    ["------ You can also implement 'Exclusion' logic to a search term to exclude keyword combinations from an auto-tag suggestion"],
+    ["- Include Label Colors on each Tag to leverage Google Calendar Labels (Event Color Coding)"],
+    ["------ This will be overwritten by 'Clockwise Ideal Day' Colors if enabled on your Calendar"],
+    [" "],
+    ["- You may also leverage 'Exclusion' logic on a search term to exclude keyword combinations from an auto-tag suggestion"],
     ["------ Example: vce(!coverage) would suggest auto-tags for anything matching 'vce' UNLESS 'coverage' was also found in the title/description"],
     ["------ The exclusions will work in 'Tags' as well as 'Filter Lists' "],
     ["TIP 1: Keep 'MinutesInterval' at 0 (never auto-refresh) if you are planning to bulk edit calendar events"],
@@ -1491,13 +1633,13 @@ function repairInstructionsSheet() {
        .setFontFamily("Poppins").setFontSize(10).setWrap(true);
 
   // Styling Headers within the text
-  const sectionHeaderIndices = [0, 10, 17]; 
+  const sectionHeaderIndices = [0, 13, 20]; 
   sectionHeaderIndices.forEach(idx => {
       sheet.getRange(startRow + idx, 1).setFontWeight("bold").setFontColor("#1155cc").setFontSize(11); 
   });
 
   // Column Width
-  sheet.setColumnWidth(1, 800);
+  sheet.setColumnWidth(1, 1000);
   
   ss.toast("Instructions sheet repaired.");
 }
@@ -1673,11 +1815,20 @@ function repairConfigSheet() {
       cell.clearDataValidations();
     }
   }
+
+  // --- 2. RESTORE TAB ORDER ---
+  repairSheetStructure(); 
+  // ----------------------------
+
   ss.toast("Config sheet repaired.");
 }
 
 function repairFilterSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. Backup
+  _backupOldSheet("Filter Lists"); 
+
   let filterSheet = ss.getSheetByName("Filter Lists");
   if (!filterSheet) filterSheet = ss.insertSheet("Filter Lists");
   
@@ -1689,6 +1840,7 @@ function repairFilterSheet() {
               .setFontFamily("Poppins").setVerticalAlignment("middle");
   filterSheet.setFrozenRows(1);
 
+  // Define Defaults (Used if no backup is found)
   const filterDefaults = {
     "IgnorePhrases":        [""], 
     "IgnoreExactTitles":    [""], 
@@ -1711,6 +1863,38 @@ function repairFilterSheet() {
     filterDefaults["AutoSECoverageKeywords"]
   ];
 
+  // --- SMART RESTORE LOGIC ---
+  const backupSheet = ss.getSheetByName("OLD Filter Lists");
+  if (backupSheet) {
+    try {
+      // 1. Map Old Headers to Column Indices
+      const oldHeaders = backupSheet.getRange(1, 1, 1, backupSheet.getLastColumn()).getValues()[0];
+      const headerMap = new Map();
+      oldHeaders.forEach((h, i) => headerMap.set(h.toString().trim(), i + 1)); // 1-based index
+
+      // 2. Overwrite defaultColumns with Old Data where matched
+      // We iterate the keys of filterDefaults (which represent the NEW sheet structure)
+      const keys = Object.keys(filterDefaults); // e.g., ["IgnorePhrases", "IgnoreExactTitles"...]
+      
+      keys.forEach((key, idx) => {
+         if (headerMap.has(key)) {
+            const colIdx = headerMap.get(key);
+            const lastRow = backupSheet.getLastRow();
+            if (lastRow > 1) {
+                // Get the data from the old column
+                const oldData = backupSheet.getRange(2, colIdx, lastRow - 1, 1).getValues().flat();
+                // Replace the default array with this restored array
+                defaultColumns[idx] = oldData;
+            }
+         }
+      });
+      ss.toast("Restored custom filters from backup.");
+    } catch (e) {
+      console.log("Filter Restore Error: " + e.message);
+    }
+  }
+  // ---------------------------
+
   const maxRows = Math.max(...defaultColumns.map(col => col.length));
   
   const finalFilterData = [];
@@ -1726,71 +1910,78 @@ function repairFilterSheet() {
     filterSheet.getRange(2, 1, finalFilterData.length, finalFilterData[0].length).setValues(finalFilterData);
   }
   
+  repairSheetStructure();
+
   ss.toast("Filter Lists sheet repaired.");
 }
 
 function repairTagsSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. SAFE BACKUP: Renames current sheet to "OLD Tags" so you don't lose data
+  _backupOldSheet("Tags"); 
+
   let tagsSheet = ss.getSheetByName("Tags");
   if (!tagsSheet) tagsSheet = ss.insertSheet("Tags");
   
   tagsSheet.clear(); 
 
-  const tagHeaders = [["Demofy Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag (For Calendar)", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "SAVED"]];
-  tagsSheet.getRange("B1:H1").setValues(tagHeaders)
-            .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
-            .setHorizontalAlignment("center").setVerticalAlignment("middle");
+  // --- SCAFFOLDING (Build Default Layout) ---
+  const tagHeaders = [["Demofy Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag (For Calendar)", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "Label Color", "SAVED"]];
+  tagsSheet.getRange("B1:I1").setValues(tagHeaders)
+             .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
+             .setHorizontalAlignment("center").setVerticalAlignment("middle");
   
   const tagsLayout = [
-    ["Sales Cycle", "", "", "", "", "", ""], 
-    ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", ""],
-    ["", "Demo (AE)", "DM;", "", "", "", ""],
-    ["", "Best Practice (AE)", "BP;", "", "", "", ""],
-    ["", "Project Scoping (AE)", "PS;", "", "", "", ""],
-    ["", "Site Walk (AE)", "SW;", "", "", "", ""],
-    ["", "Pricing / Proposal (AE)", "PN;", "", "", "", ""],
-    ["", "Executive Alignment / Board Meeting (AE)", "EX;", "", "", "", ""],
+    ["Sales Cycle", "", "", "", "", "", "", ""], 
+    ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", "", ""],
+    ["", "Demo (AE)", "DM;", "", "", "", "", ""],
+    ["", "Best Practice (AE)", "BP;", "", "", "", "", ""],
+    ["", "Project Scoping (AE)", "PS;", "", "", "", "", ""],
+    ["", "Site Walk (AE)", "SW;", "", "", "", "", ""],
+    ["", "Pricing / Proposal (AE)", "PN;", "", "", "", "", ""],
+    ["", "Executive Alignment / Board Meeting (AE)", "EX;", "", "", "", "", ""],
     
-    ["Customer Success", "", "", "", "", "", ""], 
-    ["", "Existing Customer Check-In / CBR (AE)", "OC;", "", "", "", ""],
-    ["", "Existing Customer Support (AE)", "SP;", "", "", "", ""],
+    ["Customer Success", "", "", "", "", "", "", ""], 
+    ["", "Existing Customer Check-In / CBR (AE)", "OC;", "", "", "", "", ""],
+    ["", "Existing Customer Support (AE)", "SP;", "", "", "", "", ""],
 
-    ["Solutions Engineering", "", "", "", "", "", ""], 
-    ["", "Demo (SE)", "DM (SE);", "demo", true, "", ""],
-    ["", "Best Practice (SE)", "BP (SE);", "best practice", true, "", ""],
-    ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", ""],
-    ["", "Site Walk (SE)", "SW (SE);", "sitewalk, site walk", true, "", ""],
-    ["", "Floorplans (SE)", "FP (SE);", "floorplan", true, "", ""],
-    ["", "VCE Training (SE)", "VT (SE);", "vce", true, "", ""],
-    ["", "Partner Onboarding / Training (SE)", "PT (SE);", "", "", "", ""],
-    ["", "Industry Conference / Trade Show (SE)", "TS (SE);", "", "", "", ""],
-    ["", "Verkada-Sponsored Event (SE)", "VM (SE);", "", "", "", ""],
-    ["", "Existing Customer Support (SE)", "SP (SE);", "", "", "", ""],
-    ["", "Existing Customer Check-In / CBR (SE)", "OC (SE);", "", "", "", ""],
-    ["", "AE Enablement (SE)", "AE (SE);", "", "", "", ""],
-    ["", "RFP / RFI / Security Questionnaire (SE)", "RQ (SE);", "", "", "", ""],
-    ["", "EBC (SE)", "EB (SE);", "", "", "", ""],
+    ["Solutions Engineering", "", "", "", "", "", "", ""], 
+    ["", "Demo (SE)", "DM (SE);", "demo", true, "", "", ""],
+    ["", "Best Practice (SE)", "BP (SE);", "best practice", true, "", "", ""],
+    ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", "", ""],
+    ["", "Site Walk (SE)", "SW (SE);", "sitewalk, site walk", true, "", "", ""],
+    ["", "Floorplans (SE)", "FP (SE);", "floorplan", true, "", "", ""],
+    ["", "VCE Training (SE)", "VT (SE);", "vce", true, "", "", ""],
+    ["", "Partner Onboarding / Training (SE)", "PT (SE);", "", "", "", "", ""],
+    ["", "Industry Conference / Trade Show (SE)", "TS (SE);", "", "", "", "", ""],
+    ["", "Verkada-Sponsored Event (SE)", "VM (SE);", "", "", "", "", ""],
+    ["", "Existing Customer Support (SE)", "SP (SE);", "", "", "", "", ""],
+    ["", "Existing Customer Check-In / CBR (SE)", "OC (SE);", "", "", "", "", ""],
+    ["", "AE Enablement (SE)", "AE (SE);", "", "", "", "", ""],
+    ["", "RFP / RFI / Security Questionnaire (SE)", "RQ (SE);", "", "", "", "", ""],
+    ["", "EBC (SE)", "EB (SE);", "", "", "", "", ""],
 
-    ["Partner", "", "", "", "", "", ""], 
-    ["", "Account Mapping (PARTNER)", "AM;", "", "", "", ""],
-    ["", "Deal Related Discussion (PARTNER)", "DR;", "", "", "", ""],
-    ["", "Partner Onboarding / Training (PARTNER)", "PT;", "", "", "", ""],
-    ["", "Channel Co-Marketing (PARTNER)", "CM;", "", "", "", ""],
-    ["", "Partner Demo Certification (PARTNER)", "DC;", "", "", "", ""],
+    ["Partner", "", "", "", "", "", "", ""], 
+    ["", "Account Mapping (PARTNER)", "AM;", "", "", "", "", ""],
+    ["", "Deal Related Discussion (PARTNER)", "DR;", "", "", "", "", ""],
+    ["", "Partner Onboarding / Training (PARTNER)", "PT;", "", "", "", "", ""],
+    ["", "Channel Co-Marketing (PARTNER)", "CM;", "", "", "", "", ""],
+    ["", "Partner Demo Certification (PARTNER)", "DC;", "", "", "", "", ""],
 
-    ["Other", "", "", "", "", "", ""], 
-    ["", "Recruiting (OTHER)", "RT;", "", "", "", ""],
-    ["", "VCE Training (OTHER)", "VC;", "", "", "", ""],
-    ["", "Other (OTHER)", "OT;", "", "", "", ""],
+    ["Other", "", "", "", "", "", "", ""], 
+    ["", "Recruiting (OTHER)", "RT;", "", "", "", "", ""],
+    ["", "VCE Training (OTHER)", "VC;", "", "", "", "", ""],
+    ["", "Other (OTHER)", "OT;", "", "", "", "", ""],
 
-    ["Personal", "", "", "", "", "", ""], 
-    ["", "Viper Team", "VPR (SE);", "Viper", true, "", ""],
-    ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", ""],
-    ["", "Travel Time", "TRVL (SE);", "Flight, Layover, Drive to, Commute", true, "", ""],
-    ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", ""]
+    ["Personal", "", "", "", "", "", "", ""], 
+    ["", "Viper Team", "VPR (SE);", "Viper", true, "", "", ""],
+    ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", "", ""],
+    ["", "Travel Time", "TRVL (SE);", "Flight, Layover, Drive to, Commute", true, "", "", ""],
+    ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", "", ""]
   ];
 
-  const dataRange = tagsSheet.getRange(2, 2, tagsLayout.length, 7);
+  const dataRange = tagsSheet.getRange(2, 2, tagsLayout.length, 8);
   dataRange.setValues(tagsLayout);
   
   dataRange.setFontColor("black").setBackground("white");
@@ -1802,19 +1993,17 @@ function repairTagsSheet() {
   tagsSheet.setColumnWidth(5, 300); 
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
+  tagsSheet.setColumnWidth(8, 120); 
 
   // --- DYNAMIC FORMATTING LOGIC ---
   const sectionPalette = [
-    "#efefef", // Grey (Sales)
-    "#ead1dc", // Purple (CS)
-    "#d9ead3", // Green (SE)
-    "#cfe2f3", // Blue (Partner)
-    "#fce5cd", // Orange (Other)
-    "#d9d2e9", // Lavender (Future 1)
-    "#fff2cc", // Yellow (Future 2)
-    "#f4cccc"  // Red (Future 3)
+    "#efefef", "#ead1dc", "#d9ead3", "#cfe2f3", "#fce5cd", "#d9d2e9", "#fff2cc", "#f4cccc"
   ];
   
+  const colorRule = SpreadsheetApp.newDataValidation()
+                                  .requireValueInList(Object.keys(EVENT_COLOR_MAP), true)
+                                  .setAllowInvalid(true).build();
+
   const tagColorOverrides = [
     { keyword: "Enterprise", color: "#ff00ff" },
     { keyword: "SE Coverage", color: "#ff00ff" },
@@ -1830,7 +2019,7 @@ function repairTagsSheet() {
   for (let i = 0; i < tagsLayout.length; i++) {
       const rowNum = i + 2; 
       const sectionName = tagsLayout[i][0]; 
-      const tagName = tagsLayout[i][1];      
+      const tagName = tagsLayout[i][1];       
       const defaultTitle = tagsLayout[i][4]; 
       const defaultDesc = tagsLayout[i][5];  
 
@@ -1842,6 +2031,8 @@ function repairTagsSheet() {
           tagsSheet.getRange(rowNum, 5, 1, 3).setBackground("#f3f3f3");
           const checkRange = tagsSheet.getRange(rowNum, 6, 1, 2);
           checkRange.insertCheckboxes();
+          
+          tagsSheet.getRange(rowNum, 8).setDataValidation(colorRule).setBackground("#f3f3f3");
           
           if (defaultTitle === true) tagsSheet.getRange(rowNum, 6).check();
           if (defaultDesc === true) tagsSheet.getRange(rowNum, 7).check();
@@ -1857,13 +2048,13 @@ function repairTagsSheet() {
       }
   }
 
-  tagsSheet.getRange("H1").setValue("SAVED")
+  tagsSheet.getRange("I1").setValue("SAVED")
            .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
            
   const tagsFooterStart = tagsLayout.length + 3; 
   const tagsFooterText = [
       ["1. SAVE CHANGES: 'Meeting Tools > Update Tag Dropdowns and Colors'"],
-      ["2. COLUMN 'H' WILL TELL YOU IF THE CHANGES MADE HERE WILL SHOW ON YOUR UNTAGGED MEETING LIST"],
+      ["2. COLUMN 'I' WILL TELL YOU IF THE CHANGES MADE HERE WILL SHOW ON YOUR UNTAGGED MEETING LIST"],
       ["3. CHANGES MADE HERE WILL NEED YOU TO SAVE THE LIST OR YOU WILL GET 'DATA VALIDATION' ERRORS"]
   ];
 
@@ -1872,7 +2063,9 @@ function repairTagsSheet() {
            .setFontColor("#cc0000").setFontWeight("bold");
   
   updateTagDropdownsAndColors(true);
-  ss.toast("Tags sheet repaired.");
+  repairSheetStructure(); 
+  
+  ss.toast("Tags sheet repaired (Data backed up to 'OLD Tags').");
 }
 
 // =================================================================
