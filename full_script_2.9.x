@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.6
+ * @file Meeting Tagger Tool v2.9.7
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -27,40 +27,55 @@
  *    --- added strict REGEX so that 'trial doesn't match on words like 'industrial'
  * v2.9.5 --- backup existing Filter Lists and Tags when 'repairing' a sheet
  * v2.9.6 --- added user-defined LocationExclusions for removing suggestions of 'InPerson' on location keywords
+ * v2.9.7 --- added Labels support for custom names. Added Visuals Barchart and APP_CONFIG brige Flags to disable/enable it
  */
 
 // =================================================================
-// #region 1. SPREADSHEET UI & MENU CREATION (v2.9.0 - Added Untagged Repair)
+// #region 1. SPREADSHEET UI & MENU CREATION (v3.0.0 - Feature Flags)
 // =================================================================
-function onOpen() {
+function createMeetingToolsMenu(options = {}) {
+  // Default: Radar is ENABLED unless explicitly set to false
+  const enableRadar = options.features?.radar !== false; 
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Meeting Tools')
-    .addItem('Save Config and Refresh Untagged List', 'findEventsMissingTag')
-    .addSeparator()
-    .addItem('Apply Changes to Calendar', 'applyBatchChanges')
-    .addSeparator()
-    .addItem('Generate Visuals Dashboard', 'generateDashboard')
-    .addSeparator()
-    // Config Tools
-    .addItem('Config: Update Quarter List', 'updateQuarterDropdown')
-    .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
-    .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
-    .addSeparator()
-    // New Admin Submenu
-    .addSubMenu(ui.createMenu('Admin: Initialize/Repair Sheets')
-        .addItem('Initialize ALL Sheets (Full Reset)', 'initializeAllSheets')
-        .addSeparator()
-        .addItem('Repair "Instructions" Sheet Only', 'repairInstructionsSheet') //NEW v2.9.2
-        .addItem('Repair "Untagged Meetings" Sheet Only', 'repairUntaggedSheet')
-        .addItem('Repair "Config" Sheet Only', 'repairConfigSheet')
-        .addItem('Repair "Filter Lists" Sheet Only', 'repairFilterSheet')
-        .addItem('Repair "Tags" Sheet Only', 'repairTagsSheet')
-        .addSeparator()
+  
+  const menu = ui.createMenu('Meeting Tools');
+  
+  // Standard Items
+  menu.addItem('Save Config and Refresh Untagged List', 'findEventsMissingTag')
+      .addSeparator()
+      .addItem('Apply Changes to Calendar', 'applyBatchChanges')
+      .addSeparator()
+      .addItem('Generate Visuals Dashboard', 'generateDashboard')
+      .addSeparator();
 
-        .addItem('Repair "SE Radar Meetings" Sheet Only', 'repairRadarMainSheet') // NEW v2.9.3
-        .addItem('Repair "All SE Radar Meetings CFQ" Sheet Only', 'repairRadarFilteredSheet')  // NEW v2.9.3
-        .addItem('Repair "SFDC Radar Master" Sheet Only', 'repairRadarImportSheet')) // NEW v2.9.3
-    .addToUi();
+  // Config Tools
+  menu.addItem('Config: Update Quarter List', 'updateQuarterDropdown')
+      .addItem('Config: Update Tag Dropdowns & Colors', 'updateTagDropdownsAndColors')
+      .addItem('Config: Validate Tag Keywords', 'validateTagKeywords')
+      .addSeparator();
+
+  // Admin Submenu (Built step-by-step to allow conditionals)
+  const adminMenu = ui.createMenu('Admin: Initialize/Repair Sheets');
+  
+  adminMenu.addItem('Initialize ALL Sheets (Full Reset)', 'initializeAllSheets')
+           .addSeparator()
+           .addItem('Repair "Instructions" Sheet Only', 'repairInstructionsSheet')
+           .addItem('Repair "Untagged Meetings" Sheet Only', 'repairUntaggedSheet')
+           .addItem('Repair "Config" Sheet Only', 'repairConfigSheet')
+           .addItem('Repair "Filter Lists" Sheet Only', 'repairFilterSheet')
+           .addItem('Repair "Tags" Sheet Only', 'repairTagsSheet');
+
+  // CONDITIONAL RADAR MENU ITEMS
+  if (enableRadar) {
+      adminMenu.addSeparator()
+               .addItem('Repair "SE Radar Meetings" Sheet Only', 'repairRadarMainSheet')
+               .addItem('Repair "All SE Radar Meetings CFQ" Sheet Only', 'repairRadarFilteredSheet') 
+               .addItem('Repair "SFDC Radar Master" Sheet Only', 'repairRadarImportSheet');
+  }
+
+  // Attach Submenu and Build
+  menu.addSubMenu(adminMenu);
+  menu.addToUi();
 }
 // #endregion
 
@@ -962,26 +977,74 @@ function updateTagDropdownsAndColors(silentMode = false) {
     const tagsSheet = ss.getSheetByName("Tags");
     const mainSheet = ss.getSheetByName("Untagged Meetings");
     if (!tagsSheet || !mainSheet) { if(!silentMode) ss.toast("Error: Sheets not found."); return; }
-    if (!silentMode) {
-      ss.toast("Updating tag dropdowns and colors...");
-    }
+    
+    if (!silentMode) ss.toast("Updating tag dropdowns and colors...");
+
+    // Color Map (Pastels)
+    const COLOR_HEX_MAP = {
+      "Lavender": "#d0e0ff", "Sage": "#b6d7a8", "Grape": "#d5a6bd", "Flamingo": "#f4cccc",
+      "Banana": "#ffe599", "Tangerine": "#f9cb9c", "Peacock": "#9fc5e8", "Graphite": "#d9d9d9",
+      "Blueberry": "#6d9eeb", "Basil": "#93c47d", "Tomato": "#e06666"
+    };
 
     const lastTagRow = tagsSheet.getLastRow();
-    // Read Tag Name (Col C), Colors, and now Label Colors (Col H)
-    const tagRawValues = tagsSheet.getRange("B2:H" + lastTagRow).getValues();
-    const tagRawBackgrounds = tagsSheet.getRange("B2:H" + lastTagRow).getBackgrounds();
-    
+    // Read B:H (Col 2 to 8) - We need Column B (Section) to detect headers
+    const tagRange = tagsSheet.getRange(2, 2, lastTagRow - 1, 8); 
+    const tagValues = tagRange.getValues();
+    const tagBackgrounds = tagRange.getBackgrounds();
+
     const tagNames = [["<Clear Tag>"]]; 
     const tagColors = [["#ffffff"]]; 
-    
-    for (let i = 0; i < tagRawValues.length; i++) {
-        if (tagRawValues[i][1] && tagRawValues[i][1].trim() !== "") {
-            tagNames.push([tagRawValues[i][1]]);
-            tagColors.push([tagRawBackgrounds[i][1]]);
+    const newBackgrounds = [];
+
+    // --- LOOP THROUGH ROWS ---
+    for (let i = 0; i < tagValues.length; i++) {
+        const sectionName = tagValues[i][0]; // Index 0 = Column B
+        const tagName = tagValues[i][1];     // Index 1 = Column C
+        
+        // 1. GATHER DROPDOWN DATA
+        if (tagName && tagName.trim() !== "") {
+            tagNames.push([tagName]);
+            tagColors.push([tagBackgrounds[i][1]]); 
+        }
+
+        // 2. DETERMINE COLUMN I BACKGROUND
+        if (sectionName && sectionName !== "") {
+            // FIX: It's a Section Header! Force Dark Blue.
+            newBackgrounds.push(["#283e4d"]); 
+        } else {
+            // It's a Data Row. Check for Color Label.
+            const colorLabel = tagValues[i][6]; // Index 6 = Column H
+            if (colorLabel && COLOR_HEX_MAP[colorLabel]) {
+                newBackgrounds.push([COLOR_HEX_MAP[colorLabel]]);
+            } else {
+                newBackgrounds.push(["#f3f3f3"]); // Default Grey
+            }
         }
     }
 
-    // Target Column 8 (H) on Untagged Meetings
+    // Apply Backgrounds to Tags Sheet (Col I)
+    if (newBackgrounds.length > 0) {
+        tagsSheet.getRange(2, 9, newBackgrounds.length, 1).setBackgrounds(newBackgrounds);
+    }
+
+    // --- RE-APPLY CONDITIONAL FORMATTING (To keep live updates working) ---
+    const tagsSheetRules = [];
+    const colIRange = tagsSheet.getRange(2, 9, tagsSheet.getMaxRows() - 1, 1);
+    
+    Object.keys(COLOR_HEX_MAP).forEach(colorName => {
+        const hex = COLOR_HEX_MAP[colorName];
+        const rule = SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=H2="${colorName}"`)
+            .setBackground(hex)
+            .setRanges([colIRange])
+            .build();
+        tagsSheetRules.push(rule);
+    });
+    
+    tagsSheet.setConditionalFormatRules(tagsSheetRules);
+
+    // --- UPDATE UNTAGGED MEETINGS ---
     const dropdownRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     dropdownRange.clearDataValidations();
 
@@ -996,42 +1059,30 @@ function updateTagDropdownsAndColors(silentMode = false) {
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
     }
 
+    // Formatting for Untagged Meetings
     mainSheet.clearConditionalFormatRules();
     let rules = [];
-    
     const dropdownRangeForRules = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
+    
     tagNames.forEach((nameArr, i) => {
-        if (nameArr[0] === "<Clear Tag>") {
-          rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("<Clear Tag>").setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
-        } else {
-          rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(tagColors[i][0]).setRanges([dropdownRangeForRules]).build());
+        const color = tagColors[i][0];
+        if (nameArr[0] !== "") {
+            rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo(nameArr[0]).setBackground(color).setRanges([dropdownRangeForRules]).build());
         }
     });
 
-    // Synced Status is Column 9 (I)
     const syncedRange = mainSheet.getRange(2, 9, mainSheet.getMaxRows() - 1, 1);
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("TRUE").setBackground('#d9ead3').setFontColor('#38761d').setRanges([syncedRange]).build());
     rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo("FALSE").setBackground('#f4cccc').setFontColor('#cc0000').setRanges([syncedRange]).build());
-    
     mainSheet.setConditionalFormatRules(rules);
 
     if (!silentMode) {
-      ss.toast("Tag dropdowns and colors updated.");
-      try {
-        // 1. Set "SAVED" flag in I1
-        const flagCell = tagsSheet.getRange("I1");
-        flagCell.setValue("SAVED")
-                .setBackground("#d9ead3") // Green
-                .setFontWeight("bold")
-                .setHorizontalAlignment("center");
-        
-        // 2. FIX: Ensure H1 says "Label Color" (instead of deleting it!)
-        tagsSheet.getRange("H1").setValue("Label Color")
-                 .setBackground("#283e4d")
-                 .setFontColor("white")
-                 .setFontWeight("bold");
-
-      } catch (e) { }
+        ss.toast("Tag dropdowns and colors updated.");
+        try {
+            const statusCell = tagsSheet.getRange("A1");
+            statusCell.check();
+            statusCell.setBackground("#d9ead3"); 
+        } catch (e) { }
     }
 }
 
@@ -1039,27 +1090,71 @@ function validateTagKeywords() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const tagsSheet = ss.getSheetByName("Tags");
     if (!tagsSheet) { ss.toast("Error: 'Tags' sheet not found."); return; }
-    ss.toast("Validating keywords...");
+    ss.toast("Validating keywords and labels...");
 
-    const tagsData = tagsSheet.getRange("C2:E" + tagsSheet.getLastRow()).getValues();
-    const tracker = new Map(), duplicates = new Map();
+    const lastRow = tagsSheet.getLastRow();
+    // Get Keywords (Col D / Index 2), LabelColor (Col H / Index 6), CustomName (Col I / Index 7)
+    // Note: getRange starts at C, so: C=0, D=1, E=2... H=5, I=6 relative to C? No, let's grab B:I
+    const data = tagsSheet.getRange(2, 2, lastRow - 1, 8).getValues(); 
 
-    tagsData.forEach(row => {
-        if (row[0] && row[2]) {
-            row[2].split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
-                if (tracker.has(k) && tracker.get(k) !== row[0]) {
-                    if (!duplicates.has(k)) duplicates.set(k, [tracker.get(k)]);
-                    duplicates.get(k).push(row[0]);
-                } else { tracker.set(k, row[0]); }
+    const keywordTracker = new Map();
+    const duplicateKeywords = new Map();
+    
+    // Maps Color -> First Custom Name found
+    const colorDefinitions = new Map(); 
+    const colorConflicts = [];
+
+    data.forEach((row, index) => {
+        const tagName = row[0];
+        const keywords = row[2]; // Col D (index 2 relative to B)
+        const color = row[6];    // Col H
+        const customName = row[7] ? row[7].toString().trim().toLowerCase() : "";
+
+        // 1. KEYWORD CHECK
+        if (tagName && keywords) {
+            keywords.split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+                if (keywordTracker.has(k) && keywordTracker.get(k) !== tagName) {
+                    if (!duplicateKeywords.has(k)) duplicateKeywords.set(k, [keywordTracker.get(k)]);
+                    duplicateKeywords.get(k).push(tagName);
+                } else { keywordTracker.set(k, tagName); }
             });
+        }
+
+        // 2. COLOR LABEL CHECK
+        // If a color is assigned...
+        if (color && color !== "") {
+            const colorKey = color; // e.g., "Banana"
+            // Use custom name if exists, else use the color name itself as the "meaning"
+            const meaning = customName !== "" ? customName : color;
+
+            if (colorDefinitions.has(colorKey)) {
+                const existingMeaning = colorDefinitions.get(colorKey);
+                // CONFLICT: Same Color, Different Custom Name/Meaning
+                if (existingMeaning !== meaning) {
+                    colorConflicts.push(`- Color "${color}" used for: "${existingMeaning}" AND "${meaning}"`);
+                }
+            } else {
+                colorDefinitions.set(colorKey, meaning);
+            }
         }
     });
 
-    if (duplicates.size === 0) { ss.toast("Success! All keywords are unique."); }
-    else {
-        let msg = "Warning: Duplicate keywords found!\n";
-        for (const [k, t] of duplicates.entries()) { msg += `\n- "${k}": used by ${[...new Set(t)].join(', ')}`; }
-        SpreadsheetApp.getUi().alert("Validation Failed", msg, SpreadsheetApp.getUi().ButtonSet.OK);
+    let msg = "";
+    if (duplicateKeywords.size > 0) {
+        msg += "DUPLICATE KEYWORDS:\n";
+        for (const [k, t] of duplicateKeywords.entries()) { msg += `- "${k}": ${[...new Set(t)].join(', ')}\n`; }
+        msg += "\n";
+    }
+
+    if (colorConflicts.length > 0) {
+        msg += "COLOR LABEL CONFLICTS (First match wins in Visuals):\n";
+        msg += colorConflicts.join("\n");
+    }
+
+    if (msg !== "") {
+        SpreadsheetApp.getUi().alert("Validation Warnings", msg, SpreadsheetApp.getUi().ButtonSet.OK);
+    } else {
+        ss.toast("Success! All keywords and labels are valid.");
     }
 }
 
@@ -1067,99 +1162,109 @@ function onEditTagsSheet(e) {
   const sheet = e.range.getSheet();
   if (sheet.getName() === "Tags") {
     try {
-      const flagCell = sheet.getRange("I1");
-      const flagValue = flagCell.getValue();
+      const statusCell = sheet.getRange("A1");
+      const r = e.range.getRow();
+      const c = e.range.getColumn();
 
-      if (e.range.getA1Notation() === 'I1' && flagValue === "CHANGES DETECTED") {
-        updateTagDropdownsAndColors(false); 
-        return; 
-      }
+      // If user clicks A1, don't loop infinitely. Just let them toggle it if they want.
+      if (r === 1 && c === 1) return;
       
-      if (e.range.getRow() > 1 && e.range.getColumn() >= 2 && e.range.getColumn() <= 8) { 
-          flagCell.setValue("CHANGES DETECTED")
-                  .setBackground("#f4cccc") 
-                  .setFontWeight("bold")
-                  .setHorizontalAlignment("center")
-                  .setWrap(true);
+      // If editing Data (Rows 2+, Cols 2-9)
+      if (r > 1 && c >= 2 && c <= 9) { 
+          statusCell.uncheck();
+          statusCell.setBackground("#f4cccc"); // Red
       }
     } catch (err) { }
   }
 }
 // #endregion
 
-// =================================================================
-// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.29.0 - Toggle Discrepancy Table)
-// =================================================================
+function generateDashboard(options = {}) {
+  // 1. DETERMINE CONFIGURATION
+  let showDiscrepancyTable = false;
+  let showLabelChart = true; 
 
-function _formatMinutesToHours(totalMinutes) {
-  if (totalMinutes === 0) return "0min";
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  
-  let result = "";
-  if (hours > 0) result += `${hours}hr`;
-  if (minutes > 0) result += ` ${minutes}min`;
-  return result.trim();
-}
-
-function generateDashboard(showDiscrepancyTable = false) {
-  // --- CONFIGURATION FLAGS ---
-  // OLD LOGIC WITHOUT BRIDGE SCRIPT 
-  //const SHOW_DISCREPANCY_TABLE = true; // Set to FALSE to hide the discrepancy table
-  // ---------------------------
-
-
+  if (typeof options === 'boolean') {
+      showDiscrepancyTable = options;
+  } else if (typeof options === 'object') {
+      showDiscrepancyTable = options.dashboard?.showDiscrepancyTable === true;
+      showLabelChart = options.dashboard?.showLabelChart !== false; 
+  }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const dataSheet = ss.getSheetByName("Untagged Meetings");
-  // Check for singular or plural sheet name for Radar
   const radarSheet = ss.getSheetByName("All SE Radar Meetings CFQ") || ss.getSheetByName("SFDC - Tagged SE Radar Meetings"); 
+  const tagsSheet = ss.getSheetByName("Tags");
   const visualsSheetName = "Visuals";
   
   let visualsSheet = ss.getSheetByName(visualsSheetName);
   if (!visualsSheet) { 
       visualsSheet = ss.insertSheet(visualsSheetName); 
   } else { 
-      // 1. Remove Charts
       visualsSheet.getCharts().forEach(c => visualsSheet.removeChart(c));
-      
-      // 2. Clear Content & Formats
       visualsSheet.clear(); 
-      
-      // 3. NUCLEAR UN-GROUPING (The Fix)
-      // First, force ALL rows to be visible (unhide everything)
       const maxRows = visualsSheet.getMaxRows();
       visualsSheet.showRows(1, maxRows);
-      
-      // Second, loop to remove nested groups (up to 8 levels deep)
-      // We grab the entire Column A to target all rows.
       const fullRange = visualsSheet.getRange(1, 1, maxRows, 1);
-      
       for (let i = 0; i < 8; i++) {
-        try {
-          // Flatten groups one level at a time
-          fullRange.shiftRowGroupDepth(-1);
-        } catch(e) {
-          // If this errors, it usually means there are no groups left to remove, 
-          // so we are done.
-          break; 
-        }
+        try { fullRange.shiftRowGroupDepth(-1); } catch(e) { break; }
       }
   }
-  
+
+  // --- EXPAND SHEET SIZE ---
+  const currentMaxCols = visualsSheet.getMaxColumns();
+  if (currentMaxCols < 50) {
+      visualsSheet.insertColumnsAfter(currentMaxCols, 50 - currentMaxCols);
+  }
+
   visualsSheet.showColumns(1, visualsSheet.getMaxColumns());
   visualsSheet.getRange("A1:Z1000").setFontFamily("Poppins").setFontSize(10);
   visualsSheet.setFrozenRows(6); 
-  
+
   const lastRow = dataSheet.getLastRow();
   if (lastRow < 2) { SpreadsheetApp.getUi().alert("No data found in Untagged Meetings sheet."); return; }
   
+  // --- 0. PREPARE COLOR MAPPING ---
+  const EVENT_COLOR_MAP_REVERSE = {};
+  Object.keys(EVENT_COLOR_MAP).forEach(key => {
+      EVENT_COLOR_MAP_REVERSE[EVENT_COLOR_MAP[key]] = key;
+  });
+
+  const CHART_COLOR_PALETTE = {
+      "Lavender": "#7986cb", "Sage": "#33b679", "Grape": "#8e24aa", "Flamingo": "#e67c73",
+      "Banana": "#f09300",   "Tangerine": "#f4511e", "Peacock": "#039be5", "Graphite": "#616161",
+      "Blueberry": "#3f51b5", "Basil": "#0b8043", "Tomato": "#d50000", "Default": "#a4bdfc"
+  };
+
+  const colorIdToNameMap = new Map();
+  const colorIdToHexMap = new Map();
+
+  if (tagsSheet) {
+      const tLast = tagsSheet.getLastRow();
+      if (tLast > 1) {
+          const tData = tagsSheet.getRange(2, 2, tLast - 1, 8).getValues();
+          tData.forEach(row => {
+              const colorName = row[6]; 
+              const customName = row[7]; 
+              
+              if (colorName && EVENT_COLOR_MAP[colorName]) {
+                  const cId = EVENT_COLOR_MAP[colorName];
+                  if (!colorIdToNameMap.has(cId)) {
+                      colorIdToNameMap.set(cId, customName && customName.toString().trim() !== "" ? customName : colorName);
+                      colorIdToHexMap.set(cId, CHART_COLOR_PALETTE[colorName] || "#999999");
+                  }
+              }
+          });
+      }
+  }
+
   // --- 1. PROCESS CALENDAR DATA ---
-  const data = dataSheet.getRange(2, 1, lastRow - 1, 17).getValues();
+  const data = dataSheet.getRange(2, 1, lastRow - 1, 18).getValues();
   
   let total = data.length, external = 0, seLead = 0, seCover = 0, inPerson = 0, totalMinutes = 0, totalNights = 0;
-  
   const groupedStats = new Map();
+  const colorStats = new Map();
+
   const getBaseName = (name) => name.replace(/\s*\(.*?\)\s*$/, "").trim();
 
   data.forEach(row => {
@@ -1170,6 +1275,7 @@ function generateDashboard(showDiscrepancyTable = false) {
     const tagName = row[7];
     const duration = Number(row[15]) || 0; 
     const nights = Number(row[16]) || 0;
+    const colorId = row[17] ? String(row[17]) : ""; 
 
     if (isExt) external++;
     if (isCover) seCover++;
@@ -1178,9 +1284,29 @@ function generateDashboard(showDiscrepancyTable = false) {
     totalMinutes += duration;
     totalNights += nights;
     
+    // Color Aggregation
+    let cKey = "No Label";
+    let cHex = "#e0e0e0"; 
+    
+    if (colorId && colorId !== "undefined") {
+        if (colorIdToNameMap.has(colorId)) {
+            cKey = colorIdToNameMap.get(colorId);
+            cHex = colorIdToHexMap.get(colorId);
+        } else if (EVENT_COLOR_MAP_REVERSE[colorId]) {
+            const rawName = EVENT_COLOR_MAP_REVERSE[colorId];
+            cKey = rawName;
+            cHex = CHART_COLOR_PALETTE[rawName] || "#999999";
+        }
+    }
+    
+    if (!colorStats.has(cKey)) {
+        colorStats.set(cKey, { time: 0, hex: cHex });
+    }
+    colorStats.get(cKey).time += duration;
+
+    // Tag Aggregation
     if (tagName && tagName.trim() !== "") { 
         const baseName = getBaseName(tagName);
-        
         if (!groupedStats.has(baseName)) {
             groupedStats.set(baseName, { 
                 variants: new Map(), 
@@ -1188,7 +1314,6 @@ function generateDashboard(showDiscrepancyTable = false) {
                 agg: { count: 0, time: 0, ip: 0, lead: 0, cover: 0, ext: 0, nights: 0 }
             });
         }
-        
         const group = groupedStats.get(baseName);
         group.agg.count += 1;
         group.agg.time += duration;
@@ -1219,16 +1344,13 @@ function generateDashboard(showDiscrepancyTable = false) {
       const typeIdx = headers.indexOf("Meeting Type");
       const ipIdx = headers.indexOf("Verkada Action: In Person Meeting");
       const leadIdx = headers.indexOf("Verkada Action: SE Lead");
-      
       const isTrue = (val) => String(val).toLowerCase() === "true" || val === 1;
 
       if (typeIdx > -1) {
           for (let i = 1; i < radarData.length; i++) {
               const rTag = radarData[i][typeIdx];
               if (rTag) {
-                  const rTagStr = rTag.toString().trim();
-                  const rBase = getBaseName(rTagStr);
-                  
+                  const rBase = getBaseName(rTag.toString().trim());
                   if (groupedStats.has(rBase)) {
                       const grp = groupedStats.get(rBase);
                       grp.radar.count += 1;
@@ -1244,7 +1366,6 @@ function generateDashboard(showDiscrepancyTable = false) {
   const fTotal = `=${total} - SUMIF(O11:O, TRUE, I11:I)`;
   const fExternal = `=${external} - SUMIF(O11:O, TRUE, AA11:AA)`;
   const fInternal = `=${internal} - (SUMIF(O11:O, TRUE, I11:I) - SUMIF(O11:O, TRUE, AA11:AA))`;
-
   const fInPerson = `=${inPerson} - SUMIF(O11:O, TRUE, J11:J)`;
   const fSeLead = `=${seLead} - SUMIF(O11:O, TRUE, K11:K)`;
   const fSeCover = `=${seCover} - SUMIF(O11:O, TRUE, L11:L)`;
@@ -1253,7 +1374,6 @@ function generateDashboard(showDiscrepancyTable = false) {
   const bg = "#283e4d";
   const fg = "white";
 
-  // Scorecards Row 1
   const row1Cards = [
     { title: "Total Meetings", val: fTotal, col: 1 },
     { title: "External Meetings", val: fExternal, col: 3 },
@@ -1264,16 +1384,14 @@ function generateDashboard(showDiscrepancyTable = false) {
     visualsSheet.getRange(4, card.col, 1, 2).merge().setFormula(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
   });
 
-  // Total Time
   visualsSheet.getRange(3, 7, 1, 2).merge().setValue("Total Blocked Mtg Time").setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
   visualsSheet.getRange(4, 7, 1, 2).merge().setFormula(`=TEXT(SUMIF(O11:O, FALSE, AC11:AC)/1440, "[h]""hr ""mm""min""")`).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // Scorecards Row 2
   const row2Cards = [
     { title: "In Person Mtgs", val: fInPerson, col: 1 },
     { title: "SE Lead Mtgs", val: fSeLead, col: 3 },
     { title: "SE Coverage Mtgs", val: fSeCover, col: 5 }, 
-    { title: "Nights Away", val: fNights, col: 7 }   
+    { title: "Nights Away", val: fNights, col: 7 }    
   ];
   row2Cards.forEach(card => {
     visualsSheet.getRange(5, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
@@ -1289,24 +1407,18 @@ function generateDashboard(showDiscrepancyTable = false) {
 
   // --- 4. BUILD TABLE DATA ---
   const sortedGroups = [...groupedStats.entries()].sort((a, b) => b[1].agg.count - a[1].agg.count);
-  
   const displayRows = [];     
   const comparisonRows = [];  
   const hiddenMetricRows = []; 
-  
   const groupsToCreate = []; 
   let currentRowIndex = 11;
   const parentRowsIndices = []; 
 
   sortedGroups.forEach(([baseName, data]) => {
       const isMulti = data.variants.size > 1;
-      
       displayRows.push([
           baseName + (isMulti ? " (Combined)" : ""), 
-          data.agg.count,
-          data.agg.ip,
-          data.agg.lead,
-          data.agg.cover,
+          data.agg.count, data.agg.ip, data.agg.lead, data.agg.cover,
           _formatMinutesToHours(data.agg.time)
       ]);
       
@@ -1320,23 +1432,18 @@ function generateDashboard(showDiscrepancyTable = false) {
           data.agg.ip,    data.radar.ip,    diffIP,
           data.agg.lead,  data.radar.lead,  diffLead
       ]);
-
       hiddenMetricRows.push([data.agg.ext, data.agg.nights, data.agg.time]);
       
       parentRowsIndices.push(currentRowIndex); 
       const parentRowIdx = currentRowIndex;
       currentRowIndex++;
 
-      // Child Rows
       if (isMulti) {
           const variants = [...data.variants.entries()].sort((a, b) => b[1].count - a[1].count);
           variants.forEach(([tagName, vStats]) => {
               displayRows.push([
                   "   ↳ " + tagName,
-                  vStats.count,
-                  vStats.ip,
-                  vStats.lead,
-                  vStats.cover,
+                  vStats.count, vStats.ip, vStats.lead, vStats.cover,
                   _formatMinutesToHours(vStats.time)
               ]);
               hiddenMetricRows.push([0, 0, 0]);
@@ -1357,136 +1464,126 @@ function generateDashboard(showDiscrepancyTable = false) {
 
   const headers = ["Tag Name", "Total", "IP", "Lead", "Cov", "Block Time", "%", "Hide"];
   visualsSheet.getRange(mainHeaderRow + 1, 8, 1, 8).setValues([headers]).setFontWeight("bold").setBackground(bg).setFontColor(fg);
-  visualsSheet.getRange(mainHeaderRow + 1, 8, 1, 5).setHorizontalAlignment("center");
-  visualsSheet.getRange(mainHeaderRow + 1, 15, 1, 1).setHorizontalAlignment("center");
-  visualsSheet.getRange(mainHeaderRow + 1, 13, 1, 2).setHorizontalAlignment("right"); 
-
+  
   if (displayRows.length > 0) {
     visualsSheet.getRange(mainStartRow, 8, displayRows.length, 6).setValues(displayRows);
     visualsSheet.getRange(mainStartRow, 27, hiddenMetricRows.length, 3).setValues(hiddenMetricRows).setNumberFormat("0");
-
-    // Checkboxes
+    
     visualsSheet.getRange(mainStartRow, 15, visualsSheet.getMaxRows() - mainStartRow, 1).removeCheckboxes();
     parentRowsIndices.forEach(idx => visualsSheet.getRange(idx, 15).insertCheckboxes());
     
-    // Formulas
     const pctFormulas = [];
     for (let i = mainStartRow; i < mainEndRow; i++) {
         pctFormulas.push([`=IF(O${i}="", "-", IF(O${i}=TRUE, "-", I${i}/SUMIF($O$11:$O,FALSE,$I$11:$I)))`]);
     }
     visualsSheet.getRange(mainStartRow, 14, displayRows.length, 1).setFormulas(pctFormulas).setNumberFormat("0.0%");
 
-    // Styling
     visualsSheet.getRange(mainStartRow, 9, displayRows.length, 4).setNumberFormat("0").setHorizontalAlignment("center");
     visualsSheet.getRange(mainStartRow, 13, displayRows.length, 2).setHorizontalAlignment("right");
-    
-    parentRowsIndices.forEach(idx => {
-        visualsSheet.getRange(idx, 8).setFontWeight("bold");
-    });
-
     visualsSheet.getRange(mainStartRow, 9, displayRows.length, 1).setBackground("#f3f3f3");
     visualsSheet.getRange(mainStartRow, 13, displayRows.length, 2).setBackground("#f3f3f3");
-
+    parentRowsIndices.forEach(idx => visualsSheet.getRange(idx, 8).setFontWeight("bold"));
     visualsSheet.getRange(mainHeaderRow + 1, 8, displayRows.length + 1, 8).setBorder(true, true, true, true, true, true);
   }
 
   // --- 6. WRITE COMPARISON TABLE ---
   SpreadsheetApp.flush(); 
-  
-  // Prepare the base rules (Scorecards) for application later
   let finalFormatRules = [...scorecardRules]; 
 
-    if (showDiscrepancyTable) { //SET TO TRUE TO BUILD, OTHERWISE IS FALSE
+  if (showDiscrepancyTable && comparisonRows.length > 0) {
       const compHeaderRow = mainEndRow + 4; 
       const compStartRow = compHeaderRow + 2;
       const compLen = comparisonRows.length;
       
-      if (compLen > 0) {
-          // 6.1 Title Bar
-          const titleRange = visualsSheet.getRange(compHeaderRow, 8, 1, 10);
-          titleRange.breakApart(); 
-          titleRange.merge();
-          titleRange.setValue("Discrepancy Check (Calendar vs Radar)");
-          titleRange.setFontWeight("bold").setFontColor("white").setBackground("#6aa84f")
-                    .setHorizontalAlignment("center").setFontSize(11)
-                    .setBorder(true, true, true, true, true, true);
+      visualsSheet.getRange(compHeaderRow, 8, 1, 10).merge().setValue("Discrepancy Check (Calendar vs Radar)")
+                .setFontWeight("bold").setFontColor("white").setBackground("#6aa84f")
+                .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+      
+      const compHeaders = ["Tag Name", "Cal Total", "Radar Total", "Diff", "Cal IP", "Radar IP", "Diff", "Cal Lead", "Radar Lead", "Diff"];
+      visualsSheet.getRange(compHeaderRow + 1, 8, 1, 10).setValues([compHeaders])
+                  .setFontWeight("bold").setBackground("#efefef").setFontColor("black")
+                  .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-          // 6.2 Column Headers
-          const compHeaders = ["Tag Name", "Cal Total", "Radar Total", "Diff", "Cal IP", "Radar IP", "Diff", "Cal Lead", "Radar Lead", "Diff"];
-          visualsSheet.getRange(compHeaderRow + 1, 8, 1, 10).setValues([compHeaders])
-                      .setFontWeight("bold").setBackground("#efefef").setFontColor("black")
-                      .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+      visualsSheet.getRange(compStartRow, 8, compLen, 10).setValues(comparisonRows);
+      visualsSheet.getRange(compStartRow, 9, compLen, 9).setHorizontalAlignment("center").setNumberFormat("0");
+      visualsSheet.getRange(compStartRow, 8, compLen, 1).setFontWeight("bold");
+      
+      const diffRanges = [
+          visualsSheet.getRange(compStartRow, 11, compLen, 1),
+          visualsSheet.getRange(compStartRow, 14, compLen, 1),
+          visualsSheet.getRange(compStartRow, 17, compLen, 1)
+      ];
+      finalFormatRules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberEqualTo(0).setFontColor("#38761d").setBold(true).setBackground("#d9ead3").setRanges(diffRanges).build());
+      finalFormatRules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberNotEqualTo(0).whenCellNotEmpty().setFontColor("#cc0000").setBold(true).setBackground("#f4cccc").setRanges(diffRanges).build());
+  }
 
-          // 6.3 Data
-          visualsSheet.getRange(compStartRow, 8, compLen, 10).setValues(comparisonRows);
-          
-          visualsSheet.getRange(compStartRow, 9, compLen, 9).setHorizontalAlignment("center").setNumberFormat("0");
-          visualsSheet.getRange(compStartRow, 8, compLen, 1).setFontWeight("bold"); 
-          
-          visualsSheet.getRange(compStartRow, 9, compLen, 1).setBackground("#f3f3f3");
-          visualsSheet.getRange(compStartRow, 12, compLen, 1).setBackground("#f3f3f3");
-          visualsSheet.getRange(compStartRow, 15, compLen, 1).setBackground("#f3f3f3");
-          
-          visualsSheet.getRange(compHeaderRow + 1, 8, compLen + 1, 10).setBorder(true, true, true, true, true, true);
+  visualsSheet.setConditionalFormatRules(finalFormatRules);
 
-          // 6.4 Conditional Rules (Append only if table is shown)
-          const diffRanges = [
-              visualsSheet.getRange(compStartRow, 11, compLen, 1),
-              visualsSheet.getRange(compStartRow, 14, compLen, 1),
-              visualsSheet.getRange(compStartRow, 17, compLen, 1)
-          ];
-          
-          const diffGreenRule = SpreadsheetApp.newConditionalFormatRule().whenNumberEqualTo(0).setFontColor("#38761d").setBold(true).setBackground("#d9ead3").setRanges(diffRanges).build();
-          const diffRedRule = SpreadsheetApp.newConditionalFormatRule().whenNumberNotEqualTo(0).whenCellNotEmpty().setFontColor("#cc0000").setBold(true).setBackground("#f4cccc").setRanges(diffRanges).build();
+  groupsToCreate.forEach(grp => {
+      try { visualsSheet.getRange(grp.start, 1, grp.num, 1).shiftRowGroupDepth(1); } catch(e) {}
+  });
 
-          // Add these new rules to our master list
-          finalFormatRules = finalFormatRules.concat([diffGreenRule, diffRedRule]);
+  // --- 8. CHART GENERATION ---
+  
+  // A) Pie Chart
+  visualsSheet.getRange("AD10").setValue("Chart Source");
+  visualsSheet.getRange("AD11").setFormula(`=FILTER(H11:I, O11:O=FALSE, LEFT(H11:H, 1) <> " ")`);
+  
+  if (displayRows.length > 0) {
+    const chartRange = visualsSheet.getRange("AD11:AE" + (11 + displayRows.length)); 
+    const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
+      .setOption('title', 'Meeting Tag Breakdown (Aggregated)')
+      .setOption('pieSliceText', 'percentage').setOption('is3D', true)
+      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+      .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
+      .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
+      .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
+      .setOption('height', 600).setOption('width', 700) 
+      .setPosition(9, 1, 0, 0).build(); 
+    visualsSheet.insertChart(pieChart);
+  }
+
+  // B) Bar Chart (Color Labels)
+  if (showLabelChart) {
+      const colorData = [...colorStats.entries()].sort((a, b) => b[1].time - a[1].time);
+      
+      if (colorData.length > 0) {
+          // 1. ANCHOR: Use "Category" string (or descriptive label) to help header detection
+          const chartHeaders = ["Category", ...colorData.map(([name]) => name)]; 
+          
+          // 2. VALUES: "Hours" is the Y-Axis Series Name
+          const chartValues = ["Hours", ...colorData.map(([_, stat]) => Number((stat.time / 60).toFixed(2)))];
+          
+          // 3. COLORS
+          const hexColors = colorData.map(([_, stat]) => stat.hex);
+
+          // Write Data
+          visualsSheet.getRange(10, 34, 1, chartHeaders.length).setValues([chartHeaders]);
+          visualsSheet.getRange(11, 34, 1, chartValues.length).setValues([chartValues]);
+          
+          SpreadsheetApp.flush(); 
+
+          const barChartRange = visualsSheet.getRange(10, 34, 2, chartHeaders.length);
+          
+          const barChart = visualsSheet.newChart().setChartType(Charts.ChartType.BAR).addRange(barChartRange)
+              .setNumHeaders(1) // <--- VERIFIED DOCS: First row of range is header
+              .setOption('title', 'Time by Label Category (Hours)')
+              .setOption('isStacked', false) // <--- ENSURES separate bars
+              .setOption('colors', hexColors) 
+              .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
+              .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 11 } }) 
+              .setOption('hAxis', { title: 'Hours' })
+              .setHiddenDimensionStrategy(Charts.ChartHiddenDimensionStrategy.SHOW_BOTH)
+              .setOption('chartArea', { left: '15%', top: '10%', width: '60%', height: '80%' })
+              .setOption('height', 500)
+              .setOption('width', 700)
+              .setPosition(42, 1, 0, 0)
+              .build();
+          visualsSheet.insertChart(barChart);
       }
   }
 
-  // APPLY ALL RULES (Scorecards + Discrepancy if enabled)
-  visualsSheet.setConditionalFormatRules(finalFormatRules);
-
-  // --- 7. APPLY GROUPING ---
-  groupsToCreate.forEach(grp => {
-      try {
-          visualsSheet.getRange(grp.start, 1, grp.num, 1).shiftRowGroupDepth(1);
-          const parentRow = grp.start - 1;
-          visualsSheet.getRange(parentRow, 8, 1, 8).setBackground("#efefef");
-      } catch(e) {}
-  });
-
-  // --- CHART SOURCE (Fix: Dynamic Formula) ---
-  visualsSheet.getRange("AD10").setValue("Chart Source");
-  
-  // FIX: Dynamic filter that ignores hidden rows (O=FALSE) AND child rows (Starts with space)
-  visualsSheet.getRange("AD11").setFormula(`=FILTER(H11:I, O11:O=FALSE, LEFT(H11:H, 1) <> " ")`);
-  
-  SpreadsheetApp.flush(); 
-
-  // Since we use a formula, we don't know exact rows, so we grab a large range for the chart.
-  if (displayRows.length > 0) {
-    // Dynamic range AD11:AE
-    const chartRange = visualsSheet.getRange("AD11:AE" + (11 + displayRows.length)); 
-    
-    const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
-      .setOption('title', 'Meeting Tag Breakdown (Aggregated)')
-      .setOption('pieSliceText', 'percentage')
-      .setOption('is3D', true)
-      .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
-      .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
-      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' })
-      .setHiddenDimensionStrategy(Charts.ChartHiddenDimensionStrategy.SHOW_BOTH)
-      
-      .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
-      .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
-      
-      .setOption('height', 600)
-      .setOption('width', 700) 
-      .setPosition(9, 1, 0, 0).build(); 
-    visualsSheet.insertChart(pieChart);
-  } else { visualsSheet.getRange("A10").setValue("No tagged meetings found."); }
-
+  // Final Cleanup
   const selectedQuarter = getConfig("QuarterOverride");
   let dateString = `Last ${getConfig("DaysBack")} Days`;
   if (selectedQuarter && selectedQuarter !== "None") { dateString = selectedQuarter; }
@@ -1501,52 +1598,97 @@ function generateDashboard(showDiscrepancyTable = false) {
   visualsSheet.setColumnWidth(14, 60); 
   visualsSheet.setColumnWidth(15, 50); 
   
-  for (let c = 9; c <= 17; c++) {
-      visualsSheet.setColumnWidth(c, 85); 
-  }
-  
+  for (let c = 9; c <= 17; c++) { visualsSheet.setColumnWidth(c, 85); }
   [1, 2, 3, 5, 6, 7].forEach(c => visualsSheet.setColumnWidth(c, 100));
   
-  visualsSheet.hideColumns(27, 5); 
+  visualsSheet.hideColumns(27, 20); 
 
+  repairSheetStructure(options); 
   ss.setActiveSheet(visualsSheet);
 }
-// #endregion
 
 // =================================================================
-// #region 7. INITIALIZATION & SCAFFOLDING (v3.14.0 - Optional SE Name Dropdown)
+// #region 7. INITIALIZATION & SCAFFOLDING (Include Radar Exclusion Option Flags)
 // =================================================================
 
-function initializeAllSheets() {
+function initializeAllSheets(options = {}) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  repairInstructionsSheet();
-  repairRadarMainSheet(); // <--- NEW: Auto-generates the 'SE Radar Meetings' Dashboard Tab 
-  repairRadarImportSheet(); // <--- NEW: Auto-generates the hidden 'SFDC - Radar Data' Tab
-  repairRadarFilteredSheet();  // <--- NEW: The Visible Filtered Tab
-  repairUntaggedSheet(); 
-  repairConfigSheet();
-  repairFilterSheet();
-  repairTagsSheet();
-  
-  repairSheetStructure(); 
+  const enableRadar = options.features?.radar !== false; 
+  const enableVisuals = options.features?.visuals !== false;
 
-  const visualsSheet = ss.getSheetByName("Visuals");
-  if (visualsSheet) visualsSheet.clear();
+  // 1. Repair Standard Sheets
+  repairInstructionsSheet(); 
+  repairUntaggedSheet(options); 
+  repairConfigSheet(options);    
+  repairFilterSheet(options);    
+  repairTagsSheet(options);      
+  
+  // 2. Conditional Radar Logic
+  if (enableRadar) {
+    repairRadarMainSheet(); 
+    repairRadarImportSheet(); 
+    repairRadarFilteredSheet(); 
+  } else {
+    const radarTabs = ["SE Radar Meetings", "All SE Radar Meetings CFQ", "SFDC - Tagged SE Radar Meetings"];
+    radarTabs.forEach(name => {
+      const sheet = ss.getSheetByName(name);
+      if (sheet) sheet.hideSheet();
+    });
+  }
+
+  // 3. Conditional Visuals Logic (FIXED)
+  if (enableVisuals) {
+     let visualsSheet = ss.getSheetByName("Visuals");
+     if (!visualsSheet) { 
+         // If missing, create it!
+         visualsSheet = ss.insertSheet("Visuals"); 
+     } else {
+         // If exists, wipe it clean
+         visualsSheet.clear();
+     }
+  }
+
+  // 4. Sort Sheets
+  repairSheetStructure(options); 
+
+  // 5. Final View
+  const instructionSheet = ss.getSheetByName("Instructions");
+  if (instructionSheet) instructionSheet.activate();
 
   ss.toast("Full system initialization complete.");
 }
 
-function repairSheetStructure() {
+function repairSheetStructure(options = {}) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = ["Instructions","Untagged Meetings", "Config", "Filter Lists", "Tags", "Visuals", "SE Radar Meetings", "All SE Radar Meetings CFQ"];
+  const enableRadar = options.features?.radar !== false; 
   
+  // 1. Remember where the user currently is
+  const originalSheet = ss.getActiveSheet();
+
+  // 2. Define the Ideal Order
+  let sheets = ["Instructions", "Untagged Meetings", "Config", "Filter Lists", "Tags", "Visuals"];
+  
+  if (enableRadar) {
+    sheets.push("SE Radar Meetings");
+    sheets.push("All SE Radar Meetings CFQ");
+  }
+  
+  // 3. Sort ONLY what exists
   sheets.forEach((name, index) => {
-    let sheet = ss.getSheetByName(name);
-    if (!sheet) { sheet = ss.insertSheet(name); }
-    ss.setActiveSheet(sheet);
-    ss.moveActiveSheet(index + 1);
+    const sheet = ss.getSheetByName(name);
+    if (sheet) { 
+      ss.setActiveSheet(sheet);
+      ss.moveActiveSheet(index + 1);
+      sheet.showSheet();
+    }
   });
+
+  // 4. Restore original tab focus (if it still exists)
+  if (originalSheet) {
+      try {
+          originalSheet.activate();
+      } catch (e) {}
+  }
 }
 
 // --- NEW FUNCTION ---
@@ -1558,13 +1700,42 @@ function repairInstructionsSheet() {
   sheet.clear();
   sheet.setHiddenGridlines(true); // Cleaner look
 
-  // Title Header
-  sheet.getRange("A1:B1").merge().setValue("SE Radar Tool - User Guide")
-       .setFontWeight("bold").setFontSize(14)
-       .setBackground("#283e4d").setFontColor("white")
-       .setHorizontalAlignment("center").setVerticalAlignment("middle");
+  // --- RICH TEXT HEADER LOGIC ---
+  const headerRange = sheet.getRange("A1:B1").merge();
+  const fullText = "UNOFFICIAL SE Untagged Meetings (UtM) Tool - User Guide";
+  
+  // 1. Define Style for "UNOFFICIAL" (Bold Red)
+  const redStyle = SpreadsheetApp.newTextStyle()
+    .setForegroundColor("#ff0000") // Red
+    .setBold(true)
+    .setFontFamily("Poppins")
+    .setFontSize(14)
+    .build();
+
+  // 2. Define Style for the rest (Bold White)
+  const whiteStyle = SpreadsheetApp.newTextStyle()
+    .setForegroundColor("#ffffff") // White
+    .setBold(true)
+    .setFontFamily("Poppins")
+    .setFontSize(14)
+    .build();
+
+  // 3. Build the Rich Text Value
+  const richText = SpreadsheetApp.newRichTextValue()
+    .setText(fullText)
+    .setTextStyle(0, 10, redStyle)                 // Indices 0-10: "UNOFFICIAL"
+    .setTextStyle(10, fullText.length, whiteStyle) // The rest
+    .build();
+
+  // 4. Apply to Cell
+  headerRange.setRichTextValue(richText)
+             .setBackground("#283e4d") // Dark Blue Background
+             .setHorizontalAlignment("center")
+             .setVerticalAlignment("middle");
+             
   sheet.setFrozenRows(1);
 
+  // --- INSTRUCTIONS CONTENT ---
   const instructions = [
     ["Creating an Untagged Meeting List:"],
     ["- Configure your desired settings and filters on the 'Config' tab."],
@@ -1595,7 +1766,7 @@ function repairInstructionsSheet() {
   const startRow = 3;
   // Write text
   sheet.getRange(startRow, 1, instructions.length, 1).setValues(instructions)
-       .setFontFamily("Poppins").setFontSize(10).setWrap(true);
+        .setFontFamily("Poppins").setFontSize(10).setWrap(true);
 
   // Styling Headers within the text
   const sectionHeaderIndices = [0, 13, 20]; 
@@ -1610,7 +1781,7 @@ function repairInstructionsSheet() {
 }
 
 
-function repairUntaggedSheet() {
+function repairUntaggedSheet(options = {}) { // Accept options
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName("Untagged Meetings");
   if (!sheet) {
@@ -1634,19 +1805,19 @@ function repairUntaggedSheet() {
       sheet.setColumnWidth(i, 100);
   }
 
+  // AT THE END:
+  repairSheetStructure(options); // Pass options!
+
   ss.toast("Untagged Meetings sheet fully reset.");
 }
 
-function repairConfigSheet() {
+function repairConfigSheet(options = {}) { // Accept options
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // 1. Backup <-- Commented out in v2.9.6 as unnecessary step
-  // _backupOldSheet("Config"); 
 
   let configSheet = ss.getSheetByName("Config");
   if (!configSheet) configSheet = ss.insertSheet("Config");
   
-  configSheet.clear(); 
+  configSheet.clear();
   
   // Base Configuration Data
   let configData = [];
@@ -1655,7 +1826,7 @@ function repairConfigSheet() {
   configData.push({ 
       key: "SE Name", 
       val: "", 
-      desc: "Select your name to see SFDC meetings on the 'SE Radar' Tabs", 
+      desc: "Select your name to see SFDC meetings on 'SE Radar' Tabs (Leave Blank if no 'SE Radar' Tabs are present)", 
       type: "se_name_dropdown" 
   });
 
@@ -1765,16 +1936,15 @@ function repairConfigSheet() {
     }
   }
 
-  // 2. Restore Order
-  repairSheetStructure();
+  // 2. Restore Order with options passed in:
+  repairSheetStructure(options);
 
   ss.toast("Config sheet repaired.");
 }
 
-function repairFilterSheet() {
+function repairFilterSheet(options = {}) { // Accept options
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // 1. Backup
   _backupOldSheet("Filter Lists"); 
 
   let filterSheet = ss.getSheetByName("Filter Lists");
@@ -1858,7 +2028,7 @@ function repairFilterSheet() {
     filterSheet.getRange(2, 1, finalFilterData.length, finalFilterData[0].length).setValues(finalFilterData);
   }
   
-  repairSheetStructure();
+  repairSheetStructure(options);
 
   // --- 6. RESIZE COLUMNS WITH BUFFER ---
   // First, auto-resize to fit the text
@@ -1873,10 +2043,9 @@ function repairFilterSheet() {
   ss.toast("Filter Lists sheet repaired (Columns resized).");
 }
 
-function repairTagsSheet() {
+function repairTagsSheet(options = {}) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // 1. SAFE BACKUP: Renames current sheet to "OLD Tags" so you don't lose data
   _backupOldSheet("Tags"); 
 
   let tagsSheet = ss.getSheetByName("Tags");
@@ -1884,12 +2053,14 @@ function repairTagsSheet() {
   
   tagsSheet.clear(); 
 
-  // --- SCAFFOLDING (Build Default Layout) ---
-  const tagHeaders = [["Demofy Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag (For Calendar)", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "Label Color", "SAVED"]];
+  // --- HEADER SCAFFOLDING ---
+  // A1 is now Status, I1 is Custom Label
+  const tagHeaders = [["Tag Section", "Tag and Color (For Dropdown)", "Abbreviated Tag", "Keywords (auto-tag suggestions)", "Titles", "Descriptions", "Label Color", "Label Name"]];
   tagsSheet.getRange("B1:I1").setValues(tagHeaders)
              .setFontWeight("bold").setBackground("#283e4d").setFontColor("white")
-             .setHorizontalAlignment("center").setVerticalAlignment("middle");
+             .setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
   
+  // --- LAYOUT DATA ---
   const tagsLayout = [
     ["Sales Cycle", "", "", "", "", "", "", ""], 
     ["", "Dedicated Discovery Call (AE)", "DS;", "", "", "", "", ""],
@@ -1944,15 +2115,19 @@ function repairTagsSheet() {
   
   dataRange.setFontColor("black").setBackground("white");
 
+  // --- COLUMN WIDTHS & FORMATTING ---
   tagsSheet.getRange("A:Z").setFontFamily("Poppins").setVerticalAlignment("middle");
   tagsSheet.setFrozenRows(1);
-  tagsSheet.setColumnWidth(1,10); // Column A
-  tagsSheet.setColumnWidth(2, 200); 
+  
+  tagsSheet.setColumnWidth(1, 25); // <--- STATUS (Checkbox size)
+  tagsSheet.setColumnWidth(2, 150); 
   tagsSheet.setColumnWidth(3, 300); 
+  tagsSheet.setColumnWidth(4, 150); // Abbreviated Tag Text
   tagsSheet.setColumnWidth(5, 300); 
   tagsSheet.setColumnWidth(6, 60); 
   tagsSheet.setColumnWidth(7, 100); 
-  tagsSheet.setColumnWidth(8, 120); 
+  tagsSheet.setColumnWidth(8, 90); // Label Color
+  tagsSheet.setColumnWidth(9, 110); // Label Name Width
 
   // --- DYNAMIC FORMATTING LOGIC ---
   const sectionPalette = [
@@ -1985,13 +2160,17 @@ function repairTagsSheet() {
       if (sectionName !== "") {
           currentSectionColor = sectionPalette[paletteIndex % sectionPalette.length];
           paletteIndex++;
-          tagsSheet.getRange(rowNum, 2, 1, 7).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
+          tagsSheet.getRange(rowNum, 2, 1, 8).setBackground("#283e4d").setFontColor("white").setFontWeight("bold");
       } else if (tagName !== "") {
+          // Grey out checkboxes area
           tagsSheet.getRange(rowNum, 5, 1, 3).setBackground("#f3f3f3");
           const checkRange = tagsSheet.getRange(rowNum, 6, 1, 2);
           checkRange.insertCheckboxes();
           
+          // Color Dropdown
           tagsSheet.getRange(rowNum, 8).setDataValidation(colorRule).setBackground("#f3f3f3");
+          // Custom Label Field (Light Grey default)
+          tagsSheet.getRange(rowNum, 9).setBackground("#f3f3f3");
           
           if (defaultTitle === true) tagsSheet.getRange(rowNum, 6).check();
           if (defaultDesc === true) tagsSheet.getRange(rowNum, 7).check();
@@ -2007,13 +2186,17 @@ function repairTagsSheet() {
       }
   }
 
-  tagsSheet.getRange("I1").setValue("SAVED")
-           .setBackground("#d9ead3").setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle").setWrap(true);
-           
-  const tagsFooterStart = tagsLayout.length + 3; 
+  // --- NEW STATUS INDICATOR (A1) ---
+  const statusCell = tagsSheet.getRange("A1");
+  statusCell.insertCheckboxes();
+  statusCell.check(); // Default to "Saved"
+  statusCell.setBackground("#d9ead3"); // Green
+  statusCell.setNote("CHECKED = Saved\nUNCHECKED = Unsaved Changes");
+
+  const tagsFooterStart = tagsLayout.length + 4; 
   const tagsFooterText = [
       ["1. SAVE CHANGES: 'Meeting Tools > Update Tag Dropdowns and Colors'"],
-      ["2. COLUMN 'I' WILL TELL YOU IF THE CHANGES MADE HERE WILL SHOW ON YOUR UNTAGGED MEETING LIST"],
+      ["2. CHECKBOX IN A1 INDICATES SAVED STATUS (Green = Saved)"],
       ["3. CHANGES MADE HERE WILL NEED YOU TO SAVE THE LIST OR YOU WILL GET 'DATA VALIDATION' ERRORS"]
   ];
 
@@ -2022,9 +2205,9 @@ function repairTagsSheet() {
            .setFontColor("#cc0000").setFontWeight("bold");
   
   updateTagDropdownsAndColors(true);
-  repairSheetStructure(); 
+  repairSheetStructure(options); 
   
-  ss.toast("Tags sheet repaired (Data backed up to 'OLD Tags').");
+  ss.toast("Tags sheet repaired.");
 }
 
 // =================================================================
