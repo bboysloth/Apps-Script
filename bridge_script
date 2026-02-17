@@ -1,0 +1,122 @@
+/**
+ * ======================================================================
+ * CLIENT BRIDGE SCRIPT v4 (Feature and Dashboard Flags)
+ * ======================================================================
+ * This script acts as a connector. It contains NO logic.
+ * It simply passes commands from the Spreadsheet UI to the Master Library.
+ * * REQUIRED: Add your Library and set the Identifier to "UTMCoreLibrary"
+ */
+
+// =================================================================
+// 0. MASTER CONFIGURATION
+// =================================================================
+// Toggle features on/off here. This controls menus and sheet visibility.
+const APP_CONFIG = {
+  features: {
+    radar: false,    // Enable/Disable Radar tabs
+    visuals: true    // Enable/Disable Visuals tab entirely (future use)
+  },
+  // Specific settings for the Visuals dashboard
+  dashboard: {
+    showDiscrepancyTable: false,  // Show/Hide Calendar-RADAR Diff Table
+    showLabelChart: true,          // Show/Hide Colored Labels Bar Chart (dev)
+    showMgmtChart: false          // Show/Hide Manager Chart (permissions required)(dev)
+  }
+};
+
+// =================================================================
+// 1. TRIGGERS
+// =================================================================
+
+function onOpen() {
+  // Pass config to the Library so it knows which menu items to build
+  UTMCoreLibrary.createMeetingToolsMenu(APP_CONFIG); 
+}
+
+function onEdit(e) {
+  UTMCoreLibrary.onEdit(e); 
+}
+
+// =================================================================
+// 2. MAIN MENU ACTIONS
+// =================================================================
+
+function findEventsMissingTag() {
+  // 1. Identify the user explicitly from the Sheet context
+  const email = Session.getActiveUser().getEmail();
+  
+  // 2. Pass that identity into the Library
+  UTMCoreLibrary.findEventsMissingTag(email);
+}
+
+function applyBatchChanges() {
+  UTMCoreLibrary.applyBatchChanges();
+}
+
+function generateDashboard() {
+  // Pass the entire config object. 
+  // The library will look inside 'dashboard.showDiscrepancyTable' to decide what to do.
+  UTMCoreLibrary.generateDashboard(APP_CONFIG);
+}
+
+// =================================================================
+// 3. CONFIG TOOLS
+// =================================================================
+
+function updateQuarterDropdown() {
+  UTMCoreLibrary.updateQuarterDropdown();
+}
+
+function updateTagDropdownsAndColors() {
+  // Pass 'false' for silentMode to show toasts (User Mode)
+  UTMCoreLibrary.updateTagDropdownsAndColors(false);
+}
+
+function validateTagKeywords() {
+  UTMCoreLibrary.validateTagKeywords();
+}
+
+// =================================================================
+// 4. ADMIN & REPAIR FUNCTIONS
+// =================================================================
+
+function initializeAllSheets() {
+  // Pass config so the library knows to HIDE Radar sheets if disabled
+  UTMCoreLibrary.initializeAllSheets(APP_CONFIG);
+}
+
+function repairUntaggedSheet() {
+  UTMCoreLibrary.repairUntaggedSheet();
+}
+
+function repairConfigSheet() {
+  UTMCoreLibrary.repairConfigSheet();
+}
+
+function repairTagsSheet() {
+  UTMCoreLibrary.repairTagsSheet();
+}
+
+function repairFilterSheet() {
+  UTMCoreLibrary.repairFilterSheet();
+}
+ 
+function repairInstructionsSheet() {
+  UTMCoreLibrary.repairInstructionsSheet();
+}
+
+// --- RADAR FUNCTIONS (Only active if Radar is enabled in APP_CONFIG) ---
+// We keep the bridges here so the code doesn't break if you re-enable them later,
+// but the Menu won't show buttons for these if radar: false.
+
+function repairRadarMainSheet() {
+  UTMCoreLibrary.repairRadarMainSheet();
+}
+
+function repairRadarFilteredSheet() {
+  UTMCoreLibrary.repairRadarFilteredSheet();
+}
+
+function repairRadarImportSheet() {
+  UTMCoreLibrary.repairRadarImportSheet();
+}
