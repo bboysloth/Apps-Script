@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.7
+ * @file Meeting Tagger Tool v2.9.8
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -28,6 +28,7 @@
  * v2.9.5 --- backup existing Filter Lists and Tags when 'repairing' a sheet
  * v2.9.6 --- added user-defined LocationExclusions for removing suggestions of 'InPerson' on location keywords
  * v2.9.7 --- added Labels support for custom names. Added Visuals Barchart and APP_CONFIG brige Flags to disable/enable it
+ * v2.9.8 --- added Manager Rollup Table to Visuals Dashboard and associated Bridge Script feature flags/support
  */
 
 // =================================================================
@@ -1180,6 +1181,16 @@ function onEditTagsSheet(e) {
 // #endregion
 
 function generateDashboard(options = {}) {
+  // --- FIX START: LOAD MASTER CONFIG ---
+  // If run from the menu, 'options' is empty. We must load APP_CONFIG manually.
+  if (!options || Object.keys(options).length === 0) {
+      // Check if APP_CONFIG exists (Bridge vs Standalone safety)
+      if (typeof APP_CONFIG !== 'undefined') {
+          options = APP_CONFIG;
+      }
+  }
+  // --- FIX END ---
+
   // 1. DETERMINE CONFIGURATION
   let showDiscrepancyTable = false;
   let showLabelChart = true; 
@@ -1187,6 +1198,7 @@ function generateDashboard(options = {}) {
   if (typeof options === 'boolean') {
       showDiscrepancyTable = options;
   } else if (typeof options === 'object') {
+      // Now this will correctly read 'true' from your APP_CONFIG
       showDiscrepancyTable = options.dashboard?.showDiscrepancyTable === true;
       showLabelChart = options.dashboard?.showLabelChart !== false; 
   }
@@ -1491,7 +1503,7 @@ function generateDashboard(options = {}) {
   let finalFormatRules = [...scorecardRules]; 
 
   if (showDiscrepancyTable && comparisonRows.length > 0) {
-      const compHeaderRow = mainEndRow + 4; 
+      const compHeaderRow = mainEndRow + 2; 
       const compStartRow = compHeaderRow + 2;
       const compLen = comparisonRows.length;
       
@@ -1507,6 +1519,7 @@ function generateDashboard(options = {}) {
       visualsSheet.getRange(compStartRow, 8, compLen, 10).setValues(comparisonRows);
       visualsSheet.getRange(compStartRow, 9, compLen, 9).setHorizontalAlignment("center").setNumberFormat("0");
       visualsSheet.getRange(compStartRow, 8, compLen, 1).setFontWeight("bold");
+      visualsSheet.getRange(compHeaderRow + 1, 8, compLen + 1, 10).setBorder(true, true, true, true, true, true); // Set border around Discrepancy Table
       
       const diffRanges = [
           visualsSheet.getRange(compStartRow, 11, compLen, 1),
@@ -1525,7 +1538,7 @@ function generateDashboard(options = {}) {
 
   // --- 8. CHART GENERATION ---
   
-  // A) Pie Chart
+  // A) Pie Chart (Meeting Tags)
   visualsSheet.getRange("AD10").setValue("Chart Source");
   visualsSheet.getRange("AD11").setFormula(`=FILTER(H11:I, O11:O=FALSE, LEFT(H11:H, 1) <> " ")`);
   
@@ -1533,7 +1546,9 @@ function generateDashboard(options = {}) {
     const chartRange = visualsSheet.getRange("AD11:AE" + (11 + displayRows.length)); 
     const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
       .setOption('title', 'Meeting Tag Breakdown (Aggregated)')
-      .setOption('pieSliceText', 'percentage').setOption('is3D', true)
+      .setOption('pieSliceText', 'percentage')
+      .setOption('pieSliceTextStyle', { fontName: 'Poppins', color: 'white' }) // <--- THIS FIXES THE TEXT COLOR
+      .setOption('is3D', true)
       .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
       .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
       .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
@@ -1599,11 +1614,252 @@ function generateDashboard(options = {}) {
   
   for (let c = 9; c <= 17; c++) { visualsSheet.setColumnWidth(c, 85); }
   [1, 2, 3, 5, 6, 7].forEach(c => visualsSheet.setColumnWidth(c, 100));
+   
+  // --- 9. MANAGER SECTION (NEW) ---
+  // Determine where to start. 
+  // If Discrepancy table exists, start below it. 
+  // If not, start below the Main Table.
   
-  visualsSheet.hideColumns(27, 20); 
+  let managerStartRow = mainEndRow + 4; 
+  if (showDiscrepancyTable && comparisonRows.length > 0) {
+      managerStartRow = mainEndRow + 4 + comparisonRows.length + 4; // Add buffer
+  }
+  
+  // Call the helper
+  _generateManagerSection(visualsSheet, managerStartRow, options);
 
+  // ... (Final Cleanup & RepairStructure) ...
+  visualsSheet.hideColumns(27, 20); 
   repairSheetStructure(options); 
   ss.setActiveSheet(visualsSheet);
+}
+
+// ======================= MANAGER DASHBOARD ADD-ON ====================
+// =====================================================================
+/**
+ * Generates the Manager/Team section at the bottom of the Visuals sheet.
+ */
+function _generateManagerSection(visualsSheet, startRow, options) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const teamConfig = options.team;
+
+  // --- 1. SAFETY CHECKS & DEPENDENCY GATEKEEPER ---
+  
+  // Dependency Check: If Radar is globally disabled, we cannot build this table because the source data won't exist or be valid.
+  if (options.features && options.features.radar === false) {
+      return; 
+  }
+
+  // Config Check: Is the Manager/Team section enabled?
+  if (!teamConfig || !teamConfig.enabled || !teamConfig.members || teamConfig.members.length === 0) return;
+
+  const sourceSheet = ss.getSheetByName("SFDC - Tagged SE Radar Meetings"); 
+  const finalSourceSheet = sourceSheet || ss.getSheetByName("SFDC - Tagged SE Radar Meeting");
+
+  if (!finalSourceSheet) {
+    // If Radar is enabled but sheet is missing, toast an error (because it SHOULD be there)
+    ss.toast("Manager Table Error: Could not find sheet 'SFDC - Tagged SE Radar Meetings'");
+    return;
+  }
+
+  const lastRow = finalSourceSheet.getLastRow();
+  if (lastRow < 3) return; 
+
+  // 2. READ DATA & FIND COLUMNS
+  const sourceData = finalSourceSheet.getDataRange().getValues();
+  const headers = sourceData[1]; // Row 2
+  
+  const ownerHeaderName = teamConfig.ownerColumnHeader || "Full Name";
+  const ownerIdx = headers.indexOf(ownerHeaderName);
+  const typeIdx = headers.indexOf("Meeting Type"); 
+
+  if (ownerIdx === -1) { ss.toast(`Manager Table Error: Column '${ownerHeaderName}' not found.`); return; }
+  if (typeIdx === -1) { ss.toast("Manager Table Error: Column 'Meeting Type' not found."); return; }
+
+  // 3. AGGREGATE DATA
+  const teamStats = {};
+  const teamTotalTypes = {}; 
+  
+  teamConfig.members.forEach(m => {
+    teamStats[m] = { total: 0, types: {} };
+  });
+
+  const normalizeType = (rawType) => {
+      if (!rawType || rawType.toString().trim() === "") return "Untagged";
+      return rawType.toString().replace(/\s*\((SE|AE)\)$/i, "").trim();
+  };
+
+  for (let i = 2; i < sourceData.length; i++) {
+    const row = sourceData[i];
+    const owner = row[ownerIdx];
+    const rawType = row[typeIdx];
+    
+    if (teamStats[owner]) {
+      const type = normalizeType(rawType);
+      
+      teamStats[owner].total++;
+      
+      if (!teamStats[owner].types[type]) teamStats[owner].types[type] = 0;
+      teamStats[owner].types[type]++;
+
+      if (!teamTotalTypes[type]) teamTotalTypes[type] = 0;
+      teamTotalTypes[type]++;
+    }
+  }
+
+  // 4. DETERMINE COLUMNS (Smart Merge: Untagged + Configured + Auto-Fill Top 7)
+  const MAX_COLS = 7;
+  let finalDisplayList = ["Untagged"]; 
+
+  if (teamConfig.priorityTypes && teamConfig.priorityTypes.length > 0) {
+      const userTypes = teamConfig.priorityTypes.filter(t => t !== "Untagged");
+      finalDisplayList = finalDisplayList.concat(userTypes);
+  }
+
+  if (finalDisplayList.length < MAX_COLS + 1) { 
+      const sortedTypes = Object.entries(teamTotalTypes)
+          .sort((a, b) => b[1] - a[1]) 
+          .map(entry => entry[0]);
+      
+      for (const type of sortedTypes) {
+          if (finalDisplayList.length >= MAX_COLS + 1) break; 
+          if (!finalDisplayList.includes(type)) {
+              finalDisplayList.push(type);
+          }
+      }
+  }
+
+  // 5. BUILD TABLE ROWS
+  const headerRenameMap = {
+      "Best Practice": "BP",
+      "Existing Customer Support": "CX Supp",
+      "Trial Setup/Config": "Trials",
+      "Project Scoping": "Scoping",
+      "Verkada-Sponsored Event": "Event"
+  };
+
+  const displayHeaders = finalDisplayList.map(t => headerRenameMap[t] || t);
+  const tableHeaders = ["Team Member", "Total Mtgs", ...displayHeaders, "Other"];
+  const tableData = [];
+
+  teamConfig.members.forEach(member => {
+    const stats = teamStats[member];
+    const row = [member, stats.total];
+    
+    let knownTypeCount = 0;
+    
+    finalDisplayList.forEach(t => {
+      const count = stats.types[t] || 0;
+      row.push(count);
+      knownTypeCount += count;
+    });
+
+    row.push(stats.total - knownTypeCount);
+    tableData.push(row);
+  });
+
+  // 6. RENDER HEADER
+  const sectionHeaderRow = startRow;
+  visualsSheet.getRange(sectionHeaderRow, 1, 20, 20).clearFormat(); 
+
+  visualsSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
+    .setValue("Manager Team Analysis: Meeting Distribution")
+    .setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
+    .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+  // 7. RENDER TABLE
+  const tableStartRow = sectionHeaderRow + 2;
+  
+  visualsSheet.getRange(sectionHeaderRow + 1, 8, 1, tableHeaders.length)
+    .setValues([tableHeaders])
+    .setFontWeight("bold").setBackground("#efefef")
+    .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+
+  if (tableData.length > 0) {
+    const dataRange = visualsSheet.getRange(tableStartRow, 8, tableData.length, tableHeaders.length);
+    dataRange.setValues(tableData);
+    dataRange.setHorizontalAlignment("center");
+    
+    // Apply Border
+    visualsSheet.getRange(sectionHeaderRow + 1, 8, tableData.length + 1, tableHeaders.length)
+      .setBorder(true, true, true, true, true, true);
+    
+    for (let i = 0; i < tableData.length; i++) {
+        const currentRow = tableStartRow + i;
+        if (i % 2 !== 0) visualsSheet.getRange(currentRow, 8, 1, tableHeaders.length).setBackground("#f3f3f3");
+        
+        if (tableData[i][2] > 0) {
+            visualsSheet.getRange(currentRow, 10).setBackground("#f4cccc").setFontWeight("bold");
+        }
+    }
+
+    /// --- 7b. NEW: RANKING HIGHLIGHTS (Green/Yellow) ---
+    let rules = visualsSheet.getConditionalFormatRules();
+    
+    const totalRange = visualsSheet.getRange(tableStartRow, 9, tableData.length, 1);
+    
+    const catStartCol = 11;
+    const catNumCols = tableHeaders.length - 3; 
+    
+    if (catNumCols > 0) {
+        const catRange = visualsSheet.getRange(tableStartRow, catStartCol, tableData.length, catNumCols);
+        const rowStart = tableStartRow;
+        const rowEnd = tableStartRow + tableData.length - 1;
+        
+        // Rule 1: Green (Top 2) - Totals
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},2)`)
+            .setBackground("#d9ead3")
+            .setBold(true) // <--- CHANGED FROM setFontWeight("bold")
+            .setRanges([totalRange]).build());
+
+        // Rule 2: Green (Top 2) - Categories
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},2)`)
+            .setBackground("#d9ead3")
+            .setBold(true) // <--- CHANGED
+            .setRanges([catRange]).build());
+
+        // Rule 3: Yellow (Next 2) - Totals
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=AND(I${rowStart}<LARGE(I$${rowStart}:I$${rowEnd},2), I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},4))`)
+            .setBackground("#fff2cc") 
+            .setRanges([totalRange]).build());
+
+        // Rule 4: Yellow (Next 2) - Categories
+        rules.push(SpreadsheetApp.newConditionalFormatRule()
+            .whenFormulaSatisfied(`=AND(K${rowStart}<LARGE(K$${rowStart}:K$${rowEnd},2), K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},4))`)
+            .setBackground("#fff2cc")
+            .setRanges([catRange]).build());
+            
+        visualsSheet.setConditionalFormatRules(rules);
+    }
+  }
+
+  // 8. RENDER TEAM PIE CHART
+  const chartDataStartCol = 52; // AZ
+  const chartDataRows = Object.entries(teamTotalTypes).sort((a,b) => b[1] - a[1]);
+  
+  if (chartDataRows.length > 0) {
+      visualsSheet.getRange(sectionHeaderRow, chartDataStartCol).setValue("Team Chart Data");
+      visualsSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2).setValues(chartDataRows);
+      
+      const chartRange = visualsSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2);
+      const chartStartRow = tableStartRow + tableData.length + 2; 
+
+      const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
+        .setOption('title', 'Team Aggregate: Meeting Types')
+        .setOption('pieSliceText', 'percentage').setOption('is3D', true)
+        .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
+        .setOption('titleTextStyle', { color: 'white', fontName: 'Poppins', fontSize: 20, bold: true })
+        .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
+        .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
+        .setOption('width', 700).setOption('height', 600)
+        .setPosition(sectionHeaderRow, 1, 0, 0) 
+        .build();
+        
+      visualsSheet.insertChart(pieChart);
+  }
 }
 
 // =================================================================
