@@ -1548,16 +1548,15 @@ function generateDashboard(options = {}) {
       const colorData = [...colorStats.entries()].sort((a, b) => b[1].time - a[1].time);
       
       if (colorData.length > 0) {
-          // 1. ANCHOR: Use "Category" string (or descriptive label) to help header detection
+          // 1. DATA CLEANUP: Wipe the entire hidden data range to prevent "Old Data" persistence
+          visualsSheet.getRange("AH10:ZZ50").clearContent();
+
+          // 2. PREPARE DATA
           const chartHeaders = ["Category", ...colorData.map(([name]) => name)]; 
-          
-          // 2. VALUES: "Hours" is the Y-Axis Series Name
           const chartValues = ["Hours", ...colorData.map(([_, stat]) => Number((stat.time / 60).toFixed(2)))];
-          
-          // 3. COLORS
           const hexColors = colorData.map(([_, stat]) => stat.hex);
 
-          // Write Data
+          // 3. WRITE DATA
           visualsSheet.getRange(10, 34, 1, chartHeaders.length).setValues([chartHeaders]);
           visualsSheet.getRange(11, 34, 1, chartValues.length).setValues([chartValues]);
           
@@ -1566,9 +1565,9 @@ function generateDashboard(options = {}) {
           const barChartRange = visualsSheet.getRange(10, 34, 2, chartHeaders.length);
           
           const barChart = visualsSheet.newChart().setChartType(Charts.ChartType.BAR).addRange(barChartRange)
-              .setNumHeaders(1) // <--- VERIFIED DOCS: First row of range is header
+              .setNumHeaders(1) // <--- DOCS VERIFIED: Sets first row as Header
               .setOption('title', 'Time by Label Category (Hours)')
-              .setOption('isStacked', false) // <--- ENSURES separate bars
+              .setOption('isStacked', false)
               .setOption('colors', hexColors) 
               .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
               .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 11 } }) 
@@ -2197,7 +2196,8 @@ function repairTagsSheet(options = {}) {
   const tagsFooterText = [
       ["1. SAVE CHANGES: 'Meeting Tools > Update Tag Dropdowns and Colors'"],
       ["2. CHECKBOX IN A1 INDICATES SAVED STATUS (Green = Saved)"],
-      ["3. CHANGES MADE HERE WILL NEED YOU TO SAVE THE LIST OR YOU WILL GET 'DATA VALIDATION' ERRORS"]
+      ["3. LABEL NAMES (Column I) ARE NOT SYNCED to your calendar, ONLY LABEL COLORS"],
+      ["4. CHANGES MADE HERE WILL NEED YOU TO SAVE THE LIST OR YOU WILL GET 'DATA VALIDATION' ERRORS"]
   ];
 
   tagsSheet.getRange(tagsFooterStart, 2, tagsFooterText.length, 1).setValues(tagsFooterText);
