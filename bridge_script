@@ -1,6 +1,6 @@
 /**
  * ======================================================================
- * CLIENT BRIDGE SCRIPT v4 (Feature and Dashboard Flags)
+ * CLIENT BRIDGE SCRIPT v4.1 (Manager Table Visual)
  * ======================================================================
  * This script acts as a connector. It contains NO logic.
  * It simply passes commands from the Spreadsheet UI to the Master Library.
@@ -11,19 +11,48 @@
 // 0. MASTER CONFIGURATION
 // =================================================================
 // Toggle features on/off here. This controls menus and sheet visibility.
+// Define forcedUserEmail as null so the script falls back to the active user (non-bridge script only)
+// const forcedUserEmail = null;
 const APP_CONFIG = {
   features: {
-    radar: false,    // Enable/Disable Radar tabs
-    visuals: true    // Enable/Disable Visuals tab entirely (future use)
+    radar: false,
+    visuals: true
   },
-  // Specific settings for the Visuals dashboard
   dashboard: {
-    showDiscrepancyTable: false,  // Show/Hide Calendar-RADAR Diff Table
-    showLabelChart: true,          // Show/Hide Colored Labels Bar Chart (dev)
-    showMgmtChart: false          // Show/Hide Manager Chart (permissions required)(dev)
+    showDiscrepancyTable: true,   // Show/Hide Calendar-RADAR Diff Table
+    showLabelChart: false          // Show/Hide Colored Labels Bar Chart (dev)
+  },
+  // --- MANAGER TABLE CONFIGURATION (Relies on Radar Sheets being present) ---
+  // --- if options.features.radar == FALSE, this section is skipped/ignored
+  team: {
+    enabled: true, 
+    // The exact header name in 'SFDC - Tagged SE Radar Meeting' that holds the employee name
+    ownerColumnHeader: "Full Name", 
+    
+    // The list of names of SE's on your team, spelling needs to be EXACTLY as they appear in that sheet
+    // Example below are for SLC Q1'27 as an example
+    members: [
+      "Sonika Renjen",
+      "Katherine Peppler",
+      "Rhett Hatch",
+      "Ian Young",
+      "Sam Shokodko",
+      "Grace Shelchuk",
+      "James Rebholz",
+      "Jeremy Hannan",
+      "Travis Bauer"
+    ],
+    // Optional: Only show these meeting types in the breakdown columns (to save space)
+    // If empty, it will try to show the top 6 most common types.
+    priorityTypes: [
+      "Demo", 
+      "Site Walk", 
+      "Best Practice",
+      "Trial Setup/Config", 
+      "Existing Customer Support"
+    ]
   }
 };
-
 // =================================================================
 // 1. TRIGGERS
 // =================================================================
