@@ -1763,7 +1763,7 @@ function _generateManagerSection(visualsSheet, startRow, options) {
   visualsSheet.getRange(sectionHeaderRow, 1, 20, 20).clearFormat(); 
 
   visualsSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
-    .setValue("Manager Team Analysis: Meeting Distribution")
+    .setValue("Manager Team Analysis: Radar Meeting Distribution")
     .setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
     .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
