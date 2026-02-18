@@ -16,7 +16,7 @@
 const APP_CONFIG = {
   features: {
     radar: false,
-    visuals: true
+    visuals: true                  // FUTURE USE
   },
   dashboard: {
     showDiscrepancyTable: true,   // Show/Hide Calendar-RADAR Diff Table
@@ -30,7 +30,6 @@ const APP_CONFIG = {
     ownerColumnHeader: "Full Name", 
     
     // The list of names of SE's on your team, spelling needs to be EXACTLY as they appear in that sheet
-    // Example below are for SLC Q1'27 as an example
     members: [
       "Sonika Renjen",
       "Katherine Peppler",
