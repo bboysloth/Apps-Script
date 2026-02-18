@@ -1508,7 +1508,7 @@ function generateDashboard(options = {}) {
       const compLen = comparisonRows.length;
       
       visualsSheet.getRange(compHeaderRow, 8, 1, 10).merge().setValue("Discrepancy Check (Calendar vs Radar)")
-                .setFontWeight("bold").setFontColor("white").setBackground("#6aa84f")
+                .setFontSize(11).setFontWeight("bold").setFontColor("white").setBackground("#6aa84f")
                 .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
       
       const compHeaders = ["Tag Name", "Cal Total", "Radar Total", "Diff", "Cal IP", "Radar IP", "Diff", "Cal Lead", "Radar Lead", "Diff"];
@@ -1764,7 +1764,7 @@ function _generateManagerSection(visualsSheet, startRow, options) {
 
   visualsSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
     .setValue("Manager Team Analysis: Radar Meeting Distribution")
-    .setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
+    .setFontSize(11).setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
     .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
   // 7. RENDER TABLE
