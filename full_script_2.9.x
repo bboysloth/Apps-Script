@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.9
+ * @file Meeting Tagger Tool v2.9.10
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -30,11 +30,18 @@
  * v2.9.7 --- added Labels support for custom names. Added Visuals Barchart and APP_CONFIG brige Flags to disable/enable it
  * v2.9.8 --- added Manager Rollup Table to Visuals Dashboard and associated Bridge Script feature flags/support
  * v2.9.9 --- clean up and addition of commonly used suggestions
+ * v2.9.10 -- separated 'manager tables' to a new tab 'Team Visuals' for clarity to begin rework of IC Visuals with AE breakdowns
  */
 
 // =================================================================
 // #region 1. SPREADSHEET UI & MENU CREATION (v3.0.0 - Feature Flags)
 // =================================================================
+
+// NON BRIDGE FUNCTION 
+function onOpen() {
+  // Pass the global APP_CONFIG to the menu creator
+  createMeetingToolsMenu(APP_CONFIG);
+}
 
 function createMeetingToolsMenu(options = {}) {
   // Default: Radar is ENABLED unless explicitly set to false
@@ -1188,6 +1195,11 @@ function onEditTagsSheet(e) {
 }
 // #endregion
 
+// =================================================================
+// #region 6. VISUALS DASHBOARD FUNCTIONS (v3.29.0 - Toggle Discrepancy Table)
+// =================================================================
+
+
 function generateDashboard(options = {}) {
   // --- FIX START: LOAD MASTER CONFIG ---
   if (!options || Object.keys(options).length === 0) {
@@ -1488,7 +1500,8 @@ function generateDashboard(options = {}) {
               .setHorizontalAlignment("center").setFontSize(11).setBorder(true, true, true, true, true, true);
 
   const headers = ["Tag Name", "Total", "IP", "Lead", "Cov", "Block Time", "%", "Hide"];
-  visualsSheet.getRange(mainHeaderRow + 1, 8, 1, 8).setValues([headers]).setFontWeight("bold").setBackground(bg).setFontColor(fg);
+  visualsSheet.getRange(mainHeaderRow + 1, 8, 1, 8).setValues([headers])
+              .setFontWeight("bold").setBackground(bg).setFontColor(fg).setHorizontalAlignment("center");
   
   if (displayRows.length > 0) {
     visualsSheet.getRange(mainStartRow, 8, displayRows.length, 6).setValues(displayRows);
@@ -1554,7 +1567,7 @@ function generateDashboard(options = {}) {
 
   // --- 8. CHART GENERATION ---
   
-  // A) Pie Chart (MAIN) - MOVED TO AF11 to avoid collision with Solo metrics in AD
+  // A) Pie Chart (MAIN) - Row 9, Col A
   visualsSheet.getRange("AF10").setValue("Chart Source");
   visualsSheet.getRange("AF11").setFormula(`=FILTER(H11:I, O11:O=FALSE, LEFT(H11:H, 1) <> " ")`);
   
@@ -1574,12 +1587,13 @@ function generateDashboard(options = {}) {
     visualsSheet.insertChart(pieChart);
   }
 
-  // B) Bar Chart (Color Labels)
+  // B) Bar Chart (Color Labels) - Row 42, Col A
   if (showLabelChart) {
       const colorData = [...colorStats.entries()].sort((a, b) => b[1].time - a[1].time);
       
       if (colorData.length > 0) {
-          visualsSheet.getRange("AH10:ZZ50").clearContent();
+          // FIX: Changed ZZ50 to AX50 to stay within the 50-column limit
+          visualsSheet.getRange("AH10:AX50").clearContent();
 
           const chartHeaders = ["Category", ...colorData.map(([name]) => name)]; 
           const chartValues = ["Hours", ...colorData.map(([_, stat]) => Number((stat.time / 60).toFixed(2)))];
@@ -1628,21 +1642,10 @@ function generateDashboard(options = {}) {
   for (let c = 11; c <= 17; c++) { visualsSheet.setColumnWidth(c, 85); }
   [1, 2, 3, 5, 6, 7, 9, 10].forEach(c => visualsSheet.setColumnWidth(c, 100)); // Fixed Widths for Cards
    
-// --- 9. MANAGER SECTION ---
-  // Calculate standard spacing based on the Tables above
-  let managerStartRow = mainEndRow + 4; 
-  if (showDiscrepancyTable && comparisonRows.length > 0) {
-      managerStartRow = mainEndRow + 4 + comparisonRows.length + 4; 
-  }
-  
-  // FIX: Apply a "Floor" to the start row.
-  // The Main Pie Chart starts at Row 9 and is 600px tall (approx 30-32 rows).
-  // We force the Manager Section to start no higher than Row 42 to prevent chart overlap.
-  const CHART_CLEARANCE_ROW = 42; 
-  managerStartRow = Math.max(managerStartRow, CHART_CLEARANCE_ROW);
-  
-  // Now generate the section with the safe row index
-  _generateManagerSection(visualsSheet, managerStartRow, options);
+  // --- 9. MANAGER SECTION (NEW TAB LOGIC) ---
+  // We no longer append to the bottom of the Visuals sheet.
+  // We call the completely separated Team builder function.
+  _generateTeamDashboard(options);
 
   // Final Cleanup
   visualsSheet.hideColumns(27, 20); 
@@ -1650,51 +1653,69 @@ function generateDashboard(options = {}) {
   ss.setActiveSheet(visualsSheet);
 }
 
-// ======================= MANAGER DASHBOARD ADD-ON ====================
-// =====================================================================
+// =================================================================
+// #region 6a. MANAGER DASHBOARD TAB
+// =================================================================
+
 /**
- * Generates the Manager/Team section at the bottom of the Visuals sheet.
+ * Generates the standalone "Team Visuals" tab.
+ * Mirroring the IC "Visuals" layout for a clean, uniform look.
  */
-function _generateManagerSection(visualsSheet, startRow, options) {
+function _generateTeamDashboard(options) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const teamConfig = options.team;
 
-  // --- 1. SAFETY CHECKS & DEPENDENCY GATEKEEPER ---
+  // --- 1. GATEKEEPER & SETUP ---
+  // If radar is disabled OR team view is disabled, hide/ignore this sheet.
+  let teamSheet = ss.getSheetByName("Team Visuals");
   
-  // Dependency Check: If Radar is globally disabled, we cannot build this table because the source data won't exist or be valid.
-  if (options.features && options.features.radar === false) {
+  if (options.features?.radar === false || !teamConfig || !teamConfig.enabled || !teamConfig.members || teamConfig.members.length === 0) {
+      if (teamSheet) teamSheet.hideSheet(); 
       return; 
   }
 
-  // Config Check: Is the Manager/Team section enabled?
-  if (!teamConfig || !teamConfig.enabled || !teamConfig.members || teamConfig.members.length === 0) return;
+  // Create or Reset the Sheet
+  if (!teamSheet) { 
+      teamSheet = ss.insertSheet("Team Visuals"); 
+  } else { 
+      teamSheet.getCharts().forEach(c => teamSheet.removeChart(c));
+      teamSheet.clear(); 
+      teamSheet.showSheet();
+  }
 
-  const sourceSheet = ss.getSheetByName("SFDC - Tagged SE Radar Meetings"); 
-  const finalSourceSheet = sourceSheet || ss.getSheetByName("SFDC - Tagged SE Radar Meeting");
+  // --- FIX: EXPAND SHEET SIZE TO PREVENT OUT OF BOUNDS ---
+  const teamMaxCols = teamSheet.getMaxColumns();
+  if (teamMaxCols < 50) {
+      teamSheet.insertColumnsAfter(teamMaxCols, 50 - teamMaxCols);
+  }
 
-  if (!finalSourceSheet) {
-    // If Radar is enabled but sheet is missing, toast an error (because it SHOULD be there)
-    ss.toast("Manager Table Error: Could not find sheet 'SFDC - Tagged SE Radar Meetings'");
+  // Basic Sheet Formatting
+  teamSheet.getRange(1, 1, teamSheet.getMaxRows(), 26).setFontFamily("Poppins").setFontSize(10);
+  teamSheet.setFrozenRows(6); 
+  
+  const sourceSheet = ss.getSheetByName("SFDC - Tagged SE Radar Meetings") || ss.getSheetByName("SFDC - Tagged SE Radar Meeting");
+  if (!sourceSheet) {
+    teamSheet.getRange("A1").setValue("Error: Could not find SFDC source sheet.");
     return;
   }
 
-  const lastRow = finalSourceSheet.getLastRow();
+  const lastRow = sourceSheet.getLastRow();
   if (lastRow < 3) return; 
 
-  // 2. READ DATA & FIND COLUMNS
-  const sourceData = finalSourceSheet.getDataRange().getValues();
+  // --- 2. DATA AGGREGATION ---
+  const sourceData = sourceSheet.getDataRange().getValues();
   const headers = sourceData[1]; // Row 2
   
   const ownerHeaderName = teamConfig.ownerColumnHeader || "Full Name";
   const ownerIdx = headers.indexOf(ownerHeaderName);
   const typeIdx = headers.indexOf("Meeting Type"); 
 
-  if (ownerIdx === -1) { ss.toast(`Manager Table Error: Column '${ownerHeaderName}' not found.`); return; }
-  if (typeIdx === -1) { ss.toast("Manager Table Error: Column 'Meeting Type' not found."); return; }
+  if (ownerIdx === -1 || typeIdx === -1) return;
 
-  // 3. AGGREGATE DATA
   const teamStats = {};
   const teamTotalTypes = {}; 
+  let totalTeamMtgs = 0;
+  let totalUntagged = 0;
   
   teamConfig.members.forEach(m => {
     teamStats[m] = { total: 0, types: {} };
@@ -1714,6 +1735,8 @@ function _generateManagerSection(visualsSheet, startRow, options) {
       const type = normalizeType(rawType);
       
       teamStats[owner].total++;
+      totalTeamMtgs++;
+      if (type === "Untagged") totalUntagged++;
       
       if (!teamStats[owner].types[type]) teamStats[owner].types[type] = 0;
       teamStats[owner].types[type]++;
@@ -1723,7 +1746,7 @@ function _generateManagerSection(visualsSheet, startRow, options) {
     }
   }
 
-  // 4. DETERMINE COLUMNS (Smart Merge: Untagged + Configured + Auto-Fill Top 7)
+  // --- 3. DETERMINE COLUMNS (Top 6 + Untagged) ---
   const MAX_COLS = 6;
   let finalDisplayList = ["Untagged"]; 
 
@@ -1732,11 +1755,11 @@ function _generateManagerSection(visualsSheet, startRow, options) {
       finalDisplayList = finalDisplayList.concat(userTypes);
   }
 
-  if (finalDisplayList.length < MAX_COLS + 1) { 
-      const sortedTypes = Object.entries(teamTotalTypes)
+  const sortedTypes = Object.entries(teamTotalTypes)
           .sort((a, b) => b[1] - a[1]) 
           .map(entry => entry[0]);
-      
+
+  if (finalDisplayList.length < MAX_COLS + 1) { 
       for (const type of sortedTypes) {
           if (finalDisplayList.length >= MAX_COLS + 1) break; 
           if (!finalDisplayList.includes(type)) {
@@ -1745,7 +1768,47 @@ function _generateManagerSection(visualsSheet, startRow, options) {
       }
   }
 
-  // 5. BUILD TABLE ROWS
+  // Get Most Popular Type (Excluding Untagged)
+  const topTypeLabel = sortedTypes.filter(t => t !== "Untagged")[0] || "N/A";
+
+  // --- 4. RENDER DYNAMIC SCORECARDS (ROWS 1-6) ---
+  const bg = "#4c1130"; // Maroon/Verkada Red to visually distinguish Manager Tab
+  const fg = "white";
+
+  teamSheet.getRange("A1").setValue(`Team Dashboard (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
+
+  // Match IC Dashboard Spacing: Cols 1, 3, 5, 7, 9
+  const row1Cards = [
+    { title: "Total Team Meetings", val: totalTeamMtgs, col: 1 },
+    { title: "Total Untagged", val: totalUntagged, col: 3 },
+    { title: "Active Team Members", val: teamConfig.members.length, col: 5 },
+    { title: "Top Meeting Type", val: topTypeLabel, col: 7 }, 
+    { title: "Intentionally Left Blank", val: "-", col: 9 } 
+  ];
+  
+  row1Cards.forEach(card => {
+    teamSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    teamSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  });
+
+  const row2Cards = [
+    { title: "Intentionally Left Blank", val: "-", col: 1 },
+    { title: "Intentionally Left Blank", val: "-", col: 3 },
+    { title: "Intentionally Left Blank", val: "-", col: 5 }, 
+    { title: "Intentionally Left Blank", val: "-", col: 7 }, 
+    { title: "Intentionally Left Blank", val: "-", col: 9 } 
+  ];
+  
+  row2Cards.forEach(card => {
+    teamSheet.getRange(5, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
+    teamSheet.getRange(6, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+  });
+
+  // Color specific scorecards
+  teamSheet.getRange("A4:B4").setFontColor("#38761d"); // Total Mtgs (Green)
+  teamSheet.getRange("C4:D4").setFontColor(totalUntagged > 0 ? "#cc0000" : "#38761d"); // Untagged (Red if >0)
+
+  // --- 5. BUILD & RENDER TABLE (ROW 9) ---
   const headerRenameMap = {
       "Best Practice": "BP",
       "Existing Customer Support": "CX Supp",
@@ -1761,7 +1824,6 @@ function _generateManagerSection(visualsSheet, startRow, options) {
   teamConfig.members.forEach(member => {
     const stats = teamStats[member];
     const row = [member, stats.total];
-    
     let knownTypeCount = 0;
     
     finalDisplayList.forEach(t => {
@@ -1774,110 +1836,94 @@ function _generateManagerSection(visualsSheet, startRow, options) {
     tableData.push(row);
   });
 
-  // 6. RENDER HEADER
-  const sectionHeaderRow = startRow;
-  visualsSheet.getRange(sectionHeaderRow, 1, 20, 20).clearFormat(); 
-
-  visualsSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
+  const sectionHeaderRow = 9; 
+  
+  teamSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
     .setValue("Manager Team Analysis: Radar Meeting Distribution")
     .setFontSize(11).setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
     .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
-  // 7. RENDER TABLE
   const tableStartRow = sectionHeaderRow + 2;
   
-  visualsSheet.getRange(sectionHeaderRow + 1, 8, 1, tableHeaders.length)
+  teamSheet.getRange(sectionHeaderRow + 1, 8, 1, tableHeaders.length)
     .setValues([tableHeaders])
     .setFontWeight("bold").setBackground("#efefef")
     .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
 
   if (tableData.length > 0) {
-    const dataRange = visualsSheet.getRange(tableStartRow, 8, tableData.length, tableHeaders.length);
+    const dataRange = teamSheet.getRange(tableStartRow, 8, tableData.length, tableHeaders.length);
     dataRange.setValues(tableData);
     dataRange.setHorizontalAlignment("center");
     
-    // Apply Border
-    visualsSheet.getRange(sectionHeaderRow + 1, 8, tableData.length + 1, tableHeaders.length)
+    teamSheet.getRange(sectionHeaderRow + 1, 8, tableData.length + 1, tableHeaders.length)
       .setBorder(true, true, true, true, true, true);
     
     for (let i = 0; i < tableData.length; i++) {
         const currentRow = tableStartRow + i;
-        if (i % 2 !== 0) visualsSheet.getRange(currentRow, 8, 1, tableHeaders.length).setBackground("#f3f3f3");
-        
-        if (tableData[i][2] > 0) {
-            visualsSheet.getRange(currentRow, 10).setBackground("#f4cccc").setFontWeight("bold");
-        }
+        if (i % 2 !== 0) teamSheet.getRange(currentRow, 8, 1, tableHeaders.length).setBackground("#f3f3f3");
+        if (tableData[i][2] > 0) teamSheet.getRange(currentRow, 10).setBackground("#f4cccc").setFontWeight("bold"); // Untagged Red
     }
 
-    // --- 7b. NEW: RANKING HIGHLIGHTS (Green/Yellow) ---
-    let rules = visualsSheet.getConditionalFormatRules();
-    
-    const totalRange = visualsSheet.getRange(tableStartRow, 9, tableData.length, 1);
-    
+    // Conditional Formatting
+    let rules = [];
+    const totalRange = teamSheet.getRange(tableStartRow, 9, tableData.length, 1);
     const catStartCol = 11;
     const catNumCols = tableHeaders.length - 3; 
     
     if (catNumCols > 0) {
-        const catRange = visualsSheet.getRange(tableStartRow, catStartCol, tableData.length, catNumCols);
+        const catRange = teamSheet.getRange(tableStartRow, catStartCol, tableData.length, catNumCols);
         const rowStart = tableStartRow;
         const rowEnd = tableStartRow + tableData.length - 1;
         
-        // Rule 1: Green (Top 2) - Totals
-        rules.push(SpreadsheetApp.newConditionalFormatRule()
-            .whenFormulaSatisfied(`=I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},2)`)
-            .setBackground("#d9ead3")
-            .setBold(true) // <--- CHANGED FROM setFontWeight("bold")
-            .setRanges([totalRange]).build());
-
-        // Rule 2: Green (Top 2) - Categories
-        rules.push(SpreadsheetApp.newConditionalFormatRule()
-            .whenFormulaSatisfied(`=K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},2)`)
-            .setBackground("#d9ead3")
-            .setBold(true) // <--- CHANGED
-            .setRanges([catRange]).build());
-
-        // Rule 3: Yellow (Next 2) - Totals
-        rules.push(SpreadsheetApp.newConditionalFormatRule()
-            .whenFormulaSatisfied(`=AND(I${rowStart}<LARGE(I$${rowStart}:I$${rowEnd},2), I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},4))`)
-            .setBackground("#fff2cc") 
-            .setRanges([totalRange]).build());
-
-        // Rule 4: Yellow (Next 2) - Categories
-        rules.push(SpreadsheetApp.newConditionalFormatRule()
-            .whenFormulaSatisfied(`=AND(K${rowStart}<LARGE(K$${rowStart}:K$${rowEnd},2), K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},4))`)
-            .setBackground("#fff2cc")
-            .setRanges([catRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},2)`).setBackground("#d9ead3").setBold(true).setRanges([totalRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},2)`).setBackground("#d9ead3").setBold(true).setRanges([catRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND(I${rowStart}<LARGE(I$${rowStart}:I$${rowEnd},2), I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},4))`).setBackground("#fff2cc").setRanges([totalRange]).build());
+        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND(K${rowStart}<LARGE(K$${rowStart}:K$${rowEnd},2), K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},4))`).setBackground("#fff2cc").setRanges([catRange]).build());
             
-        visualsSheet.setConditionalFormatRules(rules);
+        teamSheet.setConditionalFormatRules(rules);
     }
   }
 
-  // 8. RENDER TEAM PIE CHART
-  const chartDataStartCol = 52; // AZ
+  // --- 6. RENDER TEAM PIE CHART (ROW 9, COL 1) ---
+  const chartDataStartCol = 32; // AF
   const chartDataRows = Object.entries(teamTotalTypes).sort((a,b) => b[1] - a[1]);
   
   if (chartDataRows.length > 0) {
-      visualsSheet.getRange(sectionHeaderRow, chartDataStartCol).setValue("Team Chart Data");
-      visualsSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2).setValues(chartDataRows);
+      teamSheet.getRange(sectionHeaderRow, chartDataStartCol).setValue("Team Chart Data");
+      teamSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2).setValues(chartDataRows);
       
-      const chartRange = visualsSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2);
-      const chartStartRow = tableStartRow + tableData.length + 2; 
+      const chartRange = teamSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2);
 
-      const pieChart = visualsSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
+      const pieChart = teamSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
         .setOption('title', 'Team Aggregate: Meeting Types')
         .setOption('pieSliceText', 'percentage')
-        .setOption('pieSliceTextStyle', { color: 'white', fontName: 'Poppins', fontSize: 12 }) // <--- COLOR OF PIECHART TEXT
+        .setOption('pieSliceTextStyle', { color: 'white', fontName: 'Poppins', fontSize: 12 }) 
         .setOption('is3D', true)
         .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
         .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
         .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
         .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
         .setOption('width', 700).setOption('height', 600)
-        .setPosition(sectionHeaderRow, 1, 0, 0) 
+        .setPosition(sectionHeaderRow, 1, 0, 0) // <--- Fixed position at Row 9
         .build();
         
-      visualsSheet.insertChart(pieChart);
+      teamSheet.insertChart(pieChart);
   }
+
+  // --- 7. COLUMN WIDTH MATCHING ---
+  teamSheet.setColumnWidth(8, 250); 
+  teamSheet.setColumnWidth(9, 60); 
+  teamSheet.setColumnWidth(10, 50); 
+  teamSheet.setColumnWidth(11, 50); 
+  teamSheet.setColumnWidth(12, 50); 
+  teamSheet.setColumnWidth(13, 90); 
+  teamSheet.setColumnWidth(14, 60); 
+  teamSheet.setColumnWidth(15, 50); 
+  
+  for (let c = 11; c <= 17; c++) { teamSheet.setColumnWidth(c, 85); }
+  [1, 2, 3, 5, 6, 7, 9, 10].forEach(c => teamSheet.setColumnWidth(c, 100)); // Match Scorecard widths
+
+  teamSheet.hideColumns(32, 10); // Hide the pie chart helper data
 }
 
 // =================================================================
@@ -1939,7 +1985,7 @@ function repairSheetStructure(options = {}) {
   const originalSheet = ss.getActiveSheet();
 
   // 2. Define the Ideal Order
-  let sheets = ["Instructions", "Untagged Meetings", "Config", "Filter Lists", "Tags", "Visuals"];
+  let sheets = ["Instructions", "Untagged Meetings", "Config", "Filter Lists", "Tags", "Visuals", "Team Visuals"];
   
   if (enableRadar) {
     sheets.push("SE Radar Meetings");
@@ -2251,7 +2297,7 @@ function repairFilterSheet(options = {}) { // Accept options
     "IgnoreFromEmails":     [""], 
     "IgnoreToEmails":       [""], 
     "NightsAwayKeywords":   ["hotel", "trip", "stay"],  
-    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce(!coverage)"], 
+    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], 
     "AutoSELeadKeywords":   [""],
     "AutoSECoverageKeywords": [""],
     "LocationExclusions":   ["room", "huddle", "phone booth", "conf", "internal"] // v2.9.6
@@ -2353,7 +2399,7 @@ function repairTagsSheet(options = {}) {
     ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", "", ""],
     ["", "Site Walk (SE)", "SW (SE);", "sitewalk, site walk", true, "", "", ""],
     ["", "Floorplans (SE)", "FP (SE);", "floorplan", true, "", "", ""],
-    ["", "VCE Training (SE)", "VT (SE);", "vce(!coverage)", true, "", "", ""],
+    ["", "VCE Training (SE)", "VT (SE);", "vce", true, "", "", ""],
     ["", "Partner Onboarding / Training (SE)", "PT (SE);", "", "", "", "", ""],
     ["", "Industry Conference / Trade Show (SE)", "TS (SE);", "", "", "", "", ""],
     ["", "Verkada-Sponsored Event (SE)", "VM (SE);", "", "", "", "", ""],
