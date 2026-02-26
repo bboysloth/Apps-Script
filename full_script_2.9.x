@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.11
+ * @file Meeting Tagger Tool v2.9.12
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -31,7 +31,8 @@
  * v2.9.8 --- added Manager Rollup Table to Visuals Dashboard and associated Bridge Script feature flags/support
  * v2.9.9 --- clean up and addition of commonly used suggestions
  * v2.9.10 -- separated 'manager tables' to a new tab 'Team Visuals' for clarity to begin rework of IC Visuals with AE breakdowns
- * v2.9.11 -- added AE Time Breakdown Table to Visuals and Removed 'Labels' Table
+ * v2.9.11 -- added AE Time Breakdown Table to Visuals and Removed 'Labels' Table, also improved REGEX logic
+ * v2.9.12 -- bug fix for 'MinutesInterval' parameter as well as errors regarding empty 'Filter Lists'  
  */
 
 // =================================================================
@@ -141,49 +142,6 @@ function applyBatchChanges() {
   updateMeetingTag(null, false); 
 }
 
-/**
- * PRIMARY REFRESH ACTION:
- * 1. Saves Configuration (Updates Triggers based on MinutesInterval)
- * 2. Refreshes the Untagged Meetings List
- * * This consolidates "Save Config" and "Refresh List" into one safe action.
- */
-function refreshUntaggedList() {
-  try {
-    SpreadsheetApp.flush(); // Ensure all user edits are saved before running
-
-    // 1. UPDATE TRIGGERS (The "Save Config" part)
-    // We do this every time to ensure the auto-refresh interval is always in sync.
-    const file = SpreadsheetApp.getActiveSpreadsheet();
-    const triggers = ScriptApp.getProjectTriggers();
-    const minutes = parseInt(getConfig("MinutesInterval"), 10);
-
-    // Delete ALL existing triggers for the refresher to ensure a clean slate
-    triggers.forEach(trigger => {
-      const handler = trigger.getHandlerFunction();
-      if (handler === 'findEventsMissingTag') {
-        ScriptApp.deleteTrigger(trigger);
-      }
-    });
-
-    // FIX: Only create triggers if MinutesInterval is actually > 0.
-    // If 0, we create NO triggers (purely manual mode).
-    if (minutes > 0) {
-      // 1. Time-based trigger (e.g., every 30 mins)
-      ScriptApp.newTrigger('findEventsMissingTag').timeBased().everyMinutes(minutes).create();
-      
-      // 2. OnOpen trigger (Only automatically refresh on load if Auto-Refresh is ENABLED)
-      ScriptApp.newTrigger('findEventsMissingTag').forSpreadsheet(file).onOpen().create();
-    }
-
-    // 2. RUN THE LIST GENERATOR (The "Refresh" part)
-    findEventsMissingTag();
-    
-    SpreadsheetApp.getActiveSpreadsheet().toast("Config saved & list refreshed.");
-
-  } catch (e) {
-    SpreadsheetApp.getUi().alert("Error during refresh: " + e.message);
-  }
-}
 // #endregion
 
 // =================================================================
@@ -194,6 +152,42 @@ function findEventsMissingTag(forcedUserEmail = null) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const file = ss; 
   try {
+    // --- 0. AUTO-REFRESH TRIGGER MANAGEMENT ---
+    // This safely builds your timer in the background using Google's strict intervals
+    try {
+        const minutesRaw = parseInt(getConfig("MinutesInterval"), 10);
+        let validMinutes = 0;
+        
+        // Google Apps Script strictly allows only 1, 5, 10, 15, or 30 minute intervals.
+        if (!isNaN(minutesRaw) && minutesRaw > 0) {
+            if (minutesRaw <= 1) validMinutes = 1;
+            else if (minutesRaw <= 5) validMinutes = 5;
+            else if (minutesRaw <= 10) validMinutes = 10;
+            else if (minutesRaw <= 15) validMinutes = 15;
+            else validMinutes = 30; // Caps at 30 to prevent API timeouts
+        }
+
+        const props = PropertiesService.getDocumentProperties();
+        const activeInterval = props.getProperty('AutoRefreshInterval');
+
+        // Only delete and recreate if the interval has actually changed (Saves API Quota)
+        if (String(validMinutes) !== activeInterval) {
+            const triggers = ScriptApp.getProjectTriggers();
+            triggers.forEach(trigger => {
+                if (trigger.getHandlerFunction() === 'findEventsMissingTag') {
+                    ScriptApp.deleteTrigger(trigger);
+                }
+            });
+
+            if (validMinutes > 0) {
+                ScriptApp.newTrigger('findEventsMissingTag').timeBased().everyMinutes(validMinutes).create();
+            }
+            props.setProperty('AutoRefreshInterval', String(validMinutes));
+        }
+    } catch (triggerErr) {
+        console.log("Trigger setup skipped: " + triggerErr.message);
+    }
+
     // --- 1. CONFIGURATION ---
     const daysBack = parseInt(getConfig("DaysBack"), 10);
     const daysAhead = parseInt(getConfig("DaysAhead"), 10);
@@ -279,9 +273,16 @@ function findEventsMissingTag(forcedUserEmail = null) {
     
     // --- 4. FETCH EVENTS ---
     let rawEmail = forcedUserEmail;
+    
+    // Fallback 1: Active User (When you click the button)
     if (!rawEmail) {
         try { rawEmail = Session.getActiveUser().getEmail(); } catch (e) { rawEmail = ""; }
     }
+    // Fallback 2: Effective User (When the background timer runs it for you)
+    if (!rawEmail) {
+        try { rawEmail = Session.getEffectiveUser().getEmail(); } catch (e) { rawEmail = ""; }
+    }
+    
     const userEmail = (rawEmail || "").toString().toLowerCase();
 
     let calendarId;
@@ -366,7 +367,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
         const internalAttendeesCount = internalParticipantsList.length;
         const isSoloMeeting = hasExternalAttendee && (internalAttendeesCount === 1);
         
-        // Grab all internal emails as a string (For AE Mapping)
         const internalEmailsString = internalParticipantsList.join(',');
 
         if (attendanceFilter === "Show Only Accepted/Maybe") {
@@ -445,7 +445,7 @@ function findEventsMissingTag(forcedUserEmail = null) {
             nightsCount,
             eventColorId,
             isSoloMeeting,
-            internalEmailsString // <--- NEW COLUMN 20 (Index 19)
+            internalEmailsString
         ];
         
         if (showTaggedMeetings) {
@@ -470,7 +470,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
           range.setWrap(false);
     }
     
-    // UPDATED HEADERS
     const headers = ["Title", "Start Time", "Created By", "External Attendees", "SE Cover", "SE Lead", "In Person", "Add Tag to Meeting", "Synced", "Event Link", "Last Refreshed", "Original Cover", "Original SE", "Original IP", "Original Tag", "Duration (min)", "Nights", "Current Color ID", "Solo Meeting", "Internal Emails"];
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     
@@ -488,7 +487,6 @@ function findEventsMissingTag(forcedUserEmail = null) {
     
     _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, fullyTaggedMeetings, { filterForMissingSETags, showTaggedMeetings, externalFilter });
     
-    // HIDE COLUMNS: Hide ColorID(R), Solo(S), Emails(T) => Starts at 18, length 3
     sheet.hideColumns(18, 3); 
     updateTagDropdownsAndColors(true); 
     
@@ -770,10 +768,16 @@ function _getFilterList(listName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const listSheet = ss.getSheetByName("Filter Lists");
   if (!listSheet) return []; 
+  
+  // THE FIX: Safety valve to prevent "0 rows" crash if the sheet is empty
+  const lastRow = listSheet.getLastRow();
+  if (lastRow < 2) return []; 
+
   const headers = listSheet.getRange('A1:1').getValues()[0];
   const colIndex = headers.findIndex(h => h && h.toString().trim() === listName);
   if (colIndex === -1) return []; 
-  const columnData = listSheet.getRange(2, colIndex + 1, listSheet.getLastRow() - 1, 1).getValues();
+  
+  const columnData = listSheet.getRange(2, colIndex + 1, lastRow - 1, 1).getValues();
   return columnData.flat().filter(String).map(value => value.toString().trim());
 }
 
@@ -2266,10 +2270,10 @@ function repairConfigSheet(options = {}) { // Accept options
   });
 
   const standardConfig = [
-    { key: "MinutesInterval", val: 30, desc: "How frequently (30 minutes max) the Untagged Meetings tab automatically refreshes. 0 = No auto-refresh", type: "number" },
+    { key: "MinutesInterval", val: 30, desc: "How frequently (1, 5, 10, 15,or 30 minutes max) the Untagged Meetings tab auto-refreshes. 0 = No auto-refresh. \nChanges made to config/lists require another 'Save' for suggestions to update.", type: "number" },
     { key: "QuarterOverride", val: "None", desc: "When selected, start/end dates align with Verkada's FY dates. API restricts edits to about 2 quarters in the past\n**Selecting 'None' allows you to to use 'DaysBack' and 'DaysAhead' logic", type: "quarter_dropdown" },
     { key: "DaysBack", val: 30, desc: "How far back from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
-    { key: "DaysAhead", val: 1, desc: "How far ahead from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
+    { key: "DaysAhead", val: 7, desc: "How far ahead from today (in days) to look for untagged meetings (ignored if QuarterOverride selected)", type: "number" },
     
     { key: "IgnorePhrases", val: true, desc: `CHECKED: Meetings are ignored if they CONTAIN words/phrases located in the IgnorePhrases Filter List.\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
     { key: "IgnoreExactTitles", val: true, desc: `CHECKED: Exclude Event Titles found in the IgnoreExactTitles Filter List from results\nUNCHECKED: Ignore this Filter List`, type: "checkbox" },
