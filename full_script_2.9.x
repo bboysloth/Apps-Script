@@ -1,5 +1,5 @@
 /**
- * @file Meeting Tagger Tool v2.9.12
+ * @file Meeting Tagger Tool v2.9.13
  * @description MAJOR UPDATE: AUTOTAG !NOT FILTERS
  * /**
  * KEYWORD MATCHING LOGIC (v2.9.0)
@@ -32,7 +32,11 @@
  * v2.9.9 --- clean up and addition of commonly used suggestions
  * v2.9.10 -- separated 'manager tables' to a new tab 'Team Visuals' for clarity to begin rework of IC Visuals with AE breakdowns
  * v2.9.11 -- added AE Time Breakdown Table to Visuals and Removed 'Labels' Table, also improved REGEX logic
- * v2.9.12 -- bug fix for 'MinutesInterval' parameter as well as errors regarding empty 'Filter Lists'  
+ * v2.9.12 -- bug fix for 'MinutesInterval' parameter as well as errors regarding empty 'Filter Lists'
+ *    --- bug fix for meetings parsing when broken html links are appended to meeting tags
+ * v2.9.13 -- added scaffolding and logic (region 6a) for Manager Dashboard and Team Rollup Metrics using API (not RADAR)
+ *    --- bug fix around 'tag validation' function and updated aeHeaderRenameMap with additional tag types
+ *    --- bug fix regarding NAVAN events not having accepted invitees causing some filters to skip NAVAN events
  */
 
 // =================================================================
@@ -48,8 +52,11 @@ function onOpen() {
 function createMeetingToolsMenu(options = {}) {
   // Default: Radar is ENABLED unless explicitly set to false
   const enableRadar = options.features?.radar !== false; 
-  const ui = SpreadsheetApp.getUi();
   
+  // Check if the team manager dashboard is enabled
+  const enableTeam = options.team?.enabled === true; 
+
+  const ui = SpreadsheetApp.getUi();
   const menu = ui.createMenu('Meeting Tools');
   
   // Standard Items
@@ -59,6 +66,12 @@ function createMeetingToolsMenu(options = {}) {
       .addSeparator()
       .addItem('Generate Visuals Dashboard', 'generateDashboard')
       .addSeparator();
+
+  // MANAGER CONDITIONAL: Only show if options.team.enabled is true
+  if (enableTeam) {
+    menu.addItem('Generate Manager Dashboard', 'runManagerDashboard')
+      .addSeparator();
+  }
 
   // Config Tools
   menu.addItem('Config: Update Quarter List', 'updateQuarterDropdown')
@@ -133,6 +146,18 @@ function onEdit(e) {
     // Handle "Changes Detected" flag on Tags sheet
     onEditTagsSheet(e);
   }
+}
+
+// LIBRARY FUNCTION: Executes the manager dashboard pipeline
+function executeManagerDashboard(options) {
+  const ui = SpreadsheetApp.getUi();
+  if (!options || !options.team || !options.team.enabled) {
+      ui.alert("Manager Dashboard is disabled in APP_CONFIG.");
+      return;
+  }
+  
+  refreshTeamCalendarDatabase(options);
+  generateManagerDashboard(options);
 }
 
 /**
@@ -326,12 +351,14 @@ function findEventsMissingTag(forcedUserEmail = null) {
 
         const eventColorId = event.colorId || "";
 
+        // NEW: Calculate isTrip up here so the RSVP filter can see it
+        const isTrip = _isMatch(fullSearch, nightsAwayRules);
+
         if (event.start.date) {
             if (!includeAllDayEvents) continue; 
-            const isMyEvent = event.organizer && (event.organizer.email.toLowerCase() === userEmail);
-            const isTrip = _isMatch(fullSearch, nightsAwayRules);
-
-            if (isMyEvent && isTrip) {
+            
+            // Allow bots (like Navan) to give you nights away credit
+            if (isTrip) {
                 const s = new Date(event.start.date);
                 const e = new Date(event.end.date);
                 const diff = Math.abs(e - s);
@@ -373,9 +400,19 @@ function findEventsMissingTag(forcedUserEmail = null) {
             let myStatus = "none"; 
             if (organizerEmail === userEmail) {
                 myStatus = "organizer";
-            } else if (event.attendees) {
-                const me = event.attendees.find(a => a.email.toLowerCase() === userEmail);
-                if (me) myStatus = me.responseStatus;
+            } else if (isTrip) {
+                // THE NAVAN FIX: Travel bots inject events that sit as "Awaiting". 
+                // If it's a recognized trip, bypass the RSVP check entirely so it doesn't get dropped!
+                myStatus = "accepted";
+            } else if (event.attendees && event.attendees.length > 0) {
+                const me = event.attendees.find(a => a.self || a.email.toLowerCase() === userEmail);
+                if (me) {
+                    myStatus = me.responseStatus;
+                } else {
+                    myStatus = "accepted"; 
+                }
+            } else {
+                myStatus = "accepted";
             }
             if (!["accepted", "tentative", "organizer"].includes(myStatus)) continue; 
         }
@@ -388,12 +425,25 @@ function findEventsMissingTag(forcedUserEmail = null) {
         let hasSETagInDescription = false;
         
         if (hasMainTag) {
-            const lines = descRaw.split('\n');
-            const tagLine = lines.find(line => line.trim().startsWith(tagPrefix));
-            if (tagLine) {
-                hasSETagInDescription = tagLine.includes("(SE)");
-                let rawContent = tagLine.trim().substring(tagPrefix.length).trim();
+            // THE FIX: Stop relying on .startsWith(). 
+            // Find the exact location of the prefix, no matter what invisible garbage precedes it.
+            const prefixIndex = descRaw.indexOf(tagPrefix);
+            
+            if (prefixIndex !== -1) {
+                // Grab everything sitting *after* the prefix
+                let remainder = descRaw.substring(prefixIndex + tagPrefix.length);
+                
+                // Stop at the first newline to ensure we only grab the tag itself
+                let rawContent = remainder.split(/\r?\n/)[0].trim();
+                
+                hasSETagInDescription = rawContent.includes("(SE)");
+                
+                // Clean up HTML entities and broken tags
+                rawContent = rawContent.replace(/(?:p|br|div|span|hr|li|ul|ol|table|td|tr|th|html|body|a)(?:>|&gt;)/gi, '');
+                rawContent = rawContent.replace(/&nbsp;|\u200B/gi, '').trim();
+                
                 if (modifier && rawContent.includes(modifier)) { originalInPerson = true; }
+                
                 let lookupKey = rawContent.replace(modifier, "").replace(/;/g, "").trim();
                 originalTag = tagMap.get(lookupKey) || "";
             }
@@ -701,37 +751,28 @@ function _parseMatchRule(rawString) {
 }
 
 /**
- * STRICT MATCHER (v2.9.5): Checks text against parsed rules using WORD BOUNDARIES.
- * FIX: Safely escapes special characters before running the regex.
+ * STRICT MATCHER (v2.9.6): Checks text against parsed rules using WORD BOUNDARIES.
+ * FIX: Safely escapes special characters and allows colons, hyphens, and slashes.
  */
 function _isMatch(text, rules) {
   if (!text || !rules || rules.length === 0) return false;
 
   for (const rule of rules) {
-    // Escape all special regex characters so things like [demo] or (optional) are treated as literal text
     const escapedKeyword = rule.keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     
-    // Create a Regex with Word Boundaries (\b) to prevent partial word matches
-    // NOTE: If the keyword starts/ends with a special character (like a bracket), \b might fail.
-    // We wrap it in a slightly more forgiving boundary check.
-    const regex = new RegExp(`(^|\\s|[.,;!?'"()[\\]{}<>])${escapedKeyword}(?=\\s|[.,;!?'"()[\\]{}<>]|$)`, 'i');
+    // Expanded boundary list includes colons, hyphens, slashes, and ampersands
+    const regex = new RegExp(`(^|\\s|[.,;:!?'"()\\[\\]{}<>\\/\\|&+=*~_\\-])${escapedKeyword}(?=\\s|[.,;:!?'"()\\[\\]{}<>\\/\\|&+=*~_\\-]|$)`, 'i');
 
-    // 1. Check Keyword
     if (regex.test(text)) {
-        
-        // 2. Check Exclusions
         let isExcluded = false;
         if (rule.excludes.length > 0) {
             for (const excl of rule.excludes) {
-                // Keep exclusions as substring matches for aggressive safety
                 if (text.includes(excl)) {
                     isExcluded = true;
                     break;
                 }
             }
         }
-        
-        // If keyword matched and NOT excluded, we have a winner.
         if (!isExcluded) return true;
     }
   }
@@ -913,6 +954,62 @@ function _formatUntaggedSheet(sheet, headers, noTagMeetings, aeTaggedMeetings, f
         }
     }
 }
+
+/**
+ * Locks or unlocks the "SE Name" Config field based on the Bridge Script's Radar setting.
+ */
+/**
+ * Locks or unlocks the "SE Name" Config field based on the Bridge Script's Radar setting.
+ */
+function _toggleRadarConfigFields(options) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const configSheet = ss.getSheetByName("Config");
+  if (!configSheet) return;
+
+  // Find the SE Name row
+  const finder = configSheet.createTextFinder("SE Name").matchEntireCell(true).findNext();
+  if (!finder) return;
+
+  const targetCell = finder.offset(0, 1);
+  
+  // Check if Radar is explicitly enabled in the Bridge Script
+  const isRadarEnabled = options && options.features && options.features.radar === true;
+
+  if (!isRadarEnabled) {
+      // 1. Radar is OFF: Wipe old validation FIRST, set value, then lock it down
+      const disabledText = "LEAVE BLANK \n(Radar Disabled)";
+      
+      targetCell.clearDataValidations(); // Prevents the cell violation error
+      targetCell.setValue(disabledText);
+      targetCell.setBackground("#f4cccc").setFontColor("#cc0000"); 
+
+      // Create a new dropdown with ONLY the disabled text
+      const rule = SpreadsheetApp.newDataValidation()
+          .requireValueInList([disabledText], true)
+          .setAllowInvalid(false)
+          .build();
+      targetCell.setDataValidation(rule);
+      
+  } else {
+      // 2. Radar is ON: Clear the warning and restore their team dropdown!
+      const currentVal = targetCell.getValue();
+      if (String(currentVal).includes("LEAVE BLANK")) {
+          targetCell.setValue("");
+          targetCell.setBackground("white").setFontColor("black");
+      }
+      
+      // Safely rebuild the original SE Name dropdown using the Bridge Script config
+      if (options && options.team && options.team.members && options.team.members.length > 0) {
+          const rule = SpreadsheetApp.newDataValidation()
+              .requireValueInList(options.team.members, true)
+              .setAllowInvalid(false)
+              .build();
+          targetCell.setDataValidation(rule);
+      } else {
+          targetCell.clearDataValidations();
+      }
+  }
+}
 // #endregion
 
 // =================================================================
@@ -1048,15 +1145,31 @@ function updateTagDropdownsAndColors(silentMode = false) {
     const dropdownRange = mainSheet.getRange(2, 8, mainSheet.getMaxRows() - 1, 1);
     dropdownRange.clearDataValidations();
 
-    const helperSheetName = "_TagListHelper";
+const helperSheetName = "_TagListHelper";
     let helperSheet = ss.getSheetByName(helperSheetName);
-    if (!helperSheet) { helperSheet = ss.insertSheet(helperSheetName).hideSheet(); } else { helperSheet.clear(); }
+    
+    // 1. Create or clear it (but don't hide it yet!)
+    if (!helperSheet) { 
+        helperSheet = ss.insertSheet(helperSheetName); 
+    } else { 
+        helperSheet.clear(); 
+    }
 
+    // 2. Write the dropdown data to it
     if (tagNames.length > 0) {
         const helperRange = helperSheet.getRange(1, 1, tagNames.length, 1);
         helperRange.setValues(tagNames);
         helperRange.setBackgrounds(tagColors);
         dropdownRange.setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(helperRange, true).setAllowInvalid(false).build());
+    }
+
+    // 3. Force it into hiding AFTER all data operations are done
+    helperSheet.hideSheet();
+
+    // 4. Safety Net: Bounce the user's view back to the main sheet 
+    // This prevents the UI from glitching and forcing the hidden sheet back open.
+    if (mainSheet) {
+        mainSheet.activate();
     }
 
     // Formatting for Untagged Meetings
@@ -1093,8 +1206,10 @@ function validateTagKeywords() {
     ss.toast("Validating keywords and labels...");
 
     const lastRow = tagsSheet.getLastRow();
-    // Get Keywords (Col D / Index 2), LabelColor (Col H / Index 6), CustomName (Col I / Index 7)
-    // Note: getRange starts at C, so: C=0, D=1, E=2... H=5, I=6 relative to C? No, let's grab B:I
+    if (lastRow < 2) { ss.toast("No data to validate."); return; }
+
+    // Range B to I (8 columns). 
+    // B=0, C=1, D=2, E=3 (Keywords), F=4, G=5, H=6, I=7
     const data = tagsSheet.getRange(2, 2, lastRow - 1, 8).getValues(); 
 
     const keywordTracker = new Map();
@@ -1104,32 +1219,37 @@ function validateTagKeywords() {
     const colorDefinitions = new Map(); 
     const colorConflicts = [];
 
-    data.forEach((row, index) => {
-        const tagName = row[0];
-        const keywords = row[2]; // Col D (index 2 relative to B)
-        const color = row[6];    // Col H
-        const customName = row[7] ? row[7].toString().trim().toLowerCase() : "";
+    data.forEach((row) => {
+        const tagName = row[1];  // Col C: Tag Name
+        const keywords = row[3]; // Col E: Keywords (THIS WAS THE BUG! It was row[2] before)
+        const color = row[6];    // Col H: Color Label
+        const customName = row[7] ? row[7].toString().trim().toLowerCase() : ""; // Col I: Custom Name
 
         // 1. KEYWORD CHECK
-        if (tagName && keywords) {
-            keywords.split(',').map(k => k.trim().toLowerCase()).filter(String).forEach(k => {
+        // Force keywords to String to prevent crashes if someone types a pure number
+        if (tagName && keywords && String(keywords).trim() !== "") {
+            String(keywords).split(',').map(k => {
+                // Strip out "(!exclusion)" before checking duplicates
+                return k.replace(/\(![^)]+\)$/, '').trim().toLowerCase();
+            }).filter(String).forEach(k => {
                 if (keywordTracker.has(k) && keywordTracker.get(k) !== tagName) {
-                    if (!duplicateKeywords.has(k)) duplicateKeywords.set(k, [keywordTracker.get(k)]);
+                    if (!duplicateKeywords.has(k)) {
+                        duplicateKeywords.set(k, [keywordTracker.get(k)]);
+                    }
                     duplicateKeywords.get(k).push(tagName);
-                } else { keywordTracker.set(k, tagName); }
+                } else { 
+                    keywordTracker.set(k, tagName); 
+                }
             });
         }
 
         // 2. COLOR LABEL CHECK
-        // If a color is assigned...
         if (color && color !== "") {
-            const colorKey = color; // e.g., "Banana"
-            // Use custom name if exists, else use the color name itself as the "meaning"
+            const colorKey = color; 
             const meaning = customName !== "" ? customName : color;
 
             if (colorDefinitions.has(colorKey)) {
                 const existingMeaning = colorDefinitions.get(colorKey);
-                // CONFLICT: Same Color, Different Custom Name/Meaning
                 if (existingMeaning !== meaning) {
                     colorConflicts.push(`- Color "${color}" used for: "${existingMeaning}" AND "${meaning}"`);
                 }
@@ -1577,7 +1697,10 @@ function generateDashboard(options = {}) {
           "Project Scoping": "Scoping",
           "Verkada-Sponsored Event": "Event",
           "Verkada Internal Team Discussions": "Internal",
-          "Deal Related Discussion": "Deal Sync"
+          "Deal Related Discussion": "Deal Sync",
+          "Existing Customer Check-In / CBR": "CBR",
+          "Pricing / Proposal": "Proposal",
+          "Partner Onboarding / Training": "PT Training"
       };
 
       const earlyTags = topAeTags.slice(0, 4);
@@ -1775,7 +1898,6 @@ function generateDashboard(options = {}) {
   visualsSheet.setColumnWidth(15, 50); 
   for (let c = 16; c <= 40; c++) { visualsSheet.setColumnWidth(c, 85); } 
 
-  _generateTeamDashboard(options);
 
   visualsSheet.hideColumns(27, 20); 
   repairSheetStructure(options); 
@@ -1783,269 +1905,552 @@ function generateDashboard(options = {}) {
 }
 
 // =================================================================
-// #region 6a. MANAGER DASHBOARD TAB
+// #region 6a. TEAM CALENDAR CRAWLER & MANAGER DASHBOARD (API V1.8)
 // =================================================================
 
 /**
- * Generates the standalone "Team Visuals" tab.
- * Mirroring the IC "Visuals" layout for a clean, uniform look.
+ * 1. DATE RESOLVER & NAME PARSER
  */
-function _generateTeamDashboard(options) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const teamConfig = options.team;
-
-  // --- 1. GATEKEEPER & SETUP ---
-  let teamSheet = ss.getSheetByName("Team Visuals");
-  
-  if (options.features?.radar === false || !teamConfig || !teamConfig.enabled || !teamConfig.members || teamConfig.members.length === 0) {
-      if (teamSheet) teamSheet.hideSheet(); 
-      return; 
-  }
-
-  if (!teamSheet) { 
-      teamSheet = ss.insertSheet("Team Visuals"); 
-  } else { 
-      teamSheet.getCharts().forEach(c => teamSheet.removeChart(c));
-      teamSheet.clear(); 
-      teamSheet.showSheet();
-  }
-
-  const teamMaxCols = teamSheet.getMaxColumns();
-  if (teamMaxCols < 50) {
-      teamSheet.insertColumnsAfter(teamMaxCols, 50 - teamMaxCols);
-  }
-
-  teamSheet.getRange(1, 1, teamSheet.getMaxRows(), 26).setFontFamily("Poppins").setFontSize(10);
-  teamSheet.setFrozenRows(6); 
-  
-  const sourceSheet = ss.getSheetByName("SFDC - Tagged SE Radar Meetings") || ss.getSheetByName("SFDC - Tagged SE Radar Meeting");
-  if (!sourceSheet) {
-    teamSheet.getRange("A1").setValue("Error: Could not find SFDC source sheet.");
-    return;
-  }
-
-  const lastRow = sourceSheet.getLastRow();
-  if (lastRow < 3) return; 
-
-  // --- 2. DATA AGGREGATION ---
-  const sourceData = sourceSheet.getDataRange().getValues();
-  const headers = sourceData[1]; 
-  
-  const ownerHeaderName = teamConfig.ownerColumnHeader || "Full Name";
-  const ownerIdx = headers.indexOf(ownerHeaderName);
-  const typeIdx = headers.indexOf("Meeting Type"); 
-
-  if (ownerIdx === -1 || typeIdx === -1) return;
-
-  const teamStats = {};
-  const teamTotalTypes = {}; 
-  let totalTeamMtgs = 0;
-  let totalUntagged = 0;
-  
-  teamConfig.members.forEach(m => {
-    teamStats[m] = { total: 0, types: {} };
-  });
-
-  const normalizeType = (rawType) => {
-      if (!rawType || rawType.toString().trim() === "") return "Untagged";
-      return rawType.toString().replace(/\s*\((SE|AE)\)$/i, "").trim();
-  };
-
-  for (let i = 2; i < sourceData.length; i++) {
-    const row = sourceData[i];
-    const owner = row[ownerIdx];
-    const rawType = row[typeIdx];
+function _resolveManagerDashboardDates() {
+    const qOverride = getConfig("QuarterOverride");
+    let start = new Date(), end = new Date();
     
-    if (teamStats[owner]) {
-      const type = normalizeType(rawType);
-      
-      teamStats[owner].total++;
-      totalTeamMtgs++;
-      if (type === "Untagged") totalUntagged++;
-      
-      if (!teamStats[owner].types[type]) teamStats[owner].types[type] = 0;
-      teamStats[owner].types[type]++;
-
-      if (!teamTotalTypes[type]) teamTotalTypes[type] = 0;
-      teamTotalTypes[type]++;
-    }
-  }
-
-  // --- 3. DETERMINE COLUMNS ---
-  const MAX_COLS = 6;
-  let finalDisplayList = ["Untagged"]; 
-
-  if (teamConfig.priorityTypes && teamConfig.priorityTypes.length > 0) {
-      const userTypes = teamConfig.priorityTypes.filter(t => t !== "Untagged");
-      finalDisplayList = finalDisplayList.concat(userTypes);
-  }
-
-  const sortedTypes = Object.entries(teamTotalTypes)
-          .sort((a, b) => b[1] - a[1]) 
-          .map(entry => entry[0]);
-
-  if (finalDisplayList.length < MAX_COLS + 1) { 
-      for (const type of sortedTypes) {
-          if (finalDisplayList.length >= MAX_COLS + 1) break; 
-          if (!finalDisplayList.includes(type)) {
-              finalDisplayList.push(type);
-          }
-      }
-  }
-
-  const topTypeLabel = sortedTypes.filter(t => t !== "Untagged")[0] || "N/A";
-
-  // --- 4. RENDER DYNAMIC SCORECARDS ---
-  const bg = "#4c1130"; 
-  const fg = "white";
-
-  teamSheet.getRange("A1").setValue(`Team Dashboard (Generated: ${new Date().toLocaleString()})`).setFontWeight("bold").setFontSize(12);
-
-  const row1Cards = [
-    { title: "Total Team Meetings", val: totalTeamMtgs, col: 1 },
-    { title: "Total Untagged", val: totalUntagged, col: 3 },
-    { title: "Active Team Members", val: teamConfig.members.length, col: 5 },
-    { title: "Top Meeting Type", val: topTypeLabel, col: 7 }, 
-    { title: "Intentionally Left Blank", val: "-", col: 9 } 
-  ];
-  
-  row1Cards.forEach(card => {
-    teamSheet.getRange(3, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-    teamSheet.getRange(4, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-  });
-
-  const row2Cards = [
-    { title: "Intentionally Left Blank", val: "-", col: 1 },
-    { title: "Intentionally Left Blank", val: "-", col: 3 },
-    { title: "Intentionally Left Blank", val: "-", col: 5 }, 
-    { title: "Intentionally Left Blank", val: "-", col: 7 }, 
-    { title: "Intentionally Left Blank", val: "-", col: 9 } 
-  ];
-  
-  row2Cards.forEach(card => {
-    teamSheet.getRange(5, card.col, 1, 2).merge().setValue(card.title).setFontWeight("bold").setHorizontalAlignment("center").setBackground(bg).setFontColor(fg).setBorder(true, true, true, true, true, true);
-    teamSheet.getRange(6, card.col, 1, 2).merge().setValue(card.val).setFontSize(15).setFontWeight("bold").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-  });
-
-  teamSheet.getRange("A4:B4").setFontColor("#38761d"); 
-  teamSheet.getRange("C4:D4").setFontColor(totalUntagged > 0 ? "#cc0000" : "#38761d"); 
-
-  // --- 5. BUILD & RENDER TABLE ---
-  const headerRenameMap = {
-      "Best Practice": "BP",
-      "Existing Customer Support": "CX Supp",
-      "Trial Setup/Config": "Trials",
-      "Project Scoping": "Scoping",
-      "Verkada-Sponsored Event": "Event"
-  };
-
-  const displayHeaders = finalDisplayList.map(t => headerRenameMap[t] || t);
-  const tableHeaders = ["Team Member", "Total Mtgs", ...displayHeaders, "Other"];
-  const tableData = [];
-
-  teamConfig.members.forEach(member => {
-    const stats = teamStats[member];
-    const row = [member, stats.total];
-    let knownTypeCount = 0;
-    
-    finalDisplayList.forEach(t => {
-      const count = stats.types[t] || 0;
-      row.push(count);
-      knownTypeCount += count;
-    });
-
-    row.push(stats.total - knownTypeCount);
-    tableData.push(row);
-  });
-
-  const sectionHeaderRow = 9; 
-  
-  teamSheet.getRange(sectionHeaderRow, 8, 1, tableHeaders.length).merge()
-    .setValue("Manager Team Analysis: Radar Meeting Distribution")
-    .setFontSize(11).setFontWeight("bold").setFontColor("white").setBackground("#4c1130") 
-    .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-
-  const tableStartRow = sectionHeaderRow + 2;
-  
-  teamSheet.getRange(sectionHeaderRow + 1, 8, 1, tableHeaders.length)
-    .setValues([tableHeaders])
-    .setFontWeight("bold").setBackground("#efefef")
-    .setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
-
-  if (tableData.length > 0) {
-    const dataRange = teamSheet.getRange(tableStartRow, 8, tableData.length, tableHeaders.length);
-    dataRange.setValues(tableData);
-    dataRange.setHorizontalAlignment("center");
-    
-    teamSheet.getRange(sectionHeaderRow + 1, 8, tableData.length + 1, tableHeaders.length)
-      .setBorder(true, true, true, true, true, true);
-    
-    for (let i = 0; i < tableData.length; i++) {
-        const currentRow = tableStartRow + i;
-        if (i % 2 !== 0) teamSheet.getRange(currentRow, 8, 1, tableHeaders.length).setBackground("#f3f3f3");
-        if (tableData[i][2] > 0) teamSheet.getRange(currentRow, 10).setBackground("#f4cccc").setFontWeight("bold"); 
-    }
-
-    let rules = [];
-    const totalRange = teamSheet.getRange(tableStartRow, 9, tableData.length, 1);
-    const catStartCol = 11;
-    const catNumCols = tableHeaders.length - 3; 
-    
-    if (catNumCols > 0) {
-        const catRange = teamSheet.getRange(tableStartRow, catStartCol, tableData.length, catNumCols);
-        const rowStart = tableStartRow;
-        const rowEnd = tableStartRow + tableData.length - 1;
+    if (qOverride && qOverride !== "None" && qOverride !== "") {
+        // Normalize the string (uppercase, remove spaces)
+        const cleanOverride = String(qOverride).toUpperCase().replace(/\s+/g, '');
         
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},2)`).setBackground("#d9ead3").setBold(true).setRanges([totalRange]).build());
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},2)`).setBackground("#d9ead3").setBold(true).setRanges([catRange]).build());
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND(I${rowStart}<LARGE(I$${rowStart}:I$${rowEnd},2), I${rowStart}>=LARGE(I$${rowStart}:I$${rowEnd},4))`).setBackground("#fff2cc").setRanges([totalRange]).build());
-        rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(`=AND(K${rowStart}<LARGE(K$${rowStart}:K$${rowEnd},2), K${rowStart}>=LARGE(K$${rowStart}:K$${rowEnd},4))`).setBackground("#fff2cc").setRanges([catRange]).build());
-            
-        teamSheet.setConditionalFormatRules(rules);
-    }
-  }
+        // Extract Quarter (Q1, Q2, Q3, Q4)
+        const qMatch = cleanOverride.match(/(Q[1-4])/);
+        const quarter = qMatch ? qMatch[1] : null;
 
-  // --- 6. RENDER TEAM PIE CHART ---
-  const chartDataStartCol = 32; 
-  const chartDataRows = Object.entries(teamTotalTypes).sort((a,b) => b[1] - a[1]);
-  
-  if (chartDataRows.length > 0) {
-      teamSheet.getRange(sectionHeaderRow, chartDataStartCol).setValue("Team Chart Data");
-      teamSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2).setValues(chartDataRows);
-      
-      const chartRange = teamSheet.getRange(sectionHeaderRow + 1, chartDataStartCol, chartDataRows.length, 2);
-
-      const pieChart = teamSheet.newChart().setChartType(Charts.ChartType.PIE).addRange(chartRange)
-        .setOption('title', 'Team Aggregate: Meeting Types')
-        .setOption('pieSliceText', 'percentage')
-        .setOption('pieSliceTextStyle', { color: 'white', fontName: 'Poppins', fontSize: 12 }) 
-        .setOption('is3D', true)
-        .setOption('colors', ['#283e4d', '#3d9fd2', '#757475', '#34545e', '#959ea7', '#546e7a', '#78909c', '#63c0f2', '#1f4e6a', '#de6662', '#c45551', '#e68a87'])
-        .setOption('titleTextStyle', { fontName: 'Poppins', fontSize: 20, bold: true })
-        .setOption('legend', { position: 'right', textStyle: { fontName: 'Poppins', fontSize: 13 } }) 
-        .setOption('chartArea', { left: '5%', top: '10%', width: '70%', height: '80%' }) 
-        .setOption('width', 700).setOption('height', 600)
-        .setPosition(sectionHeaderRow, 1, 0, 0) 
-        .build();
+        // Extract Year (e.g., FY27 -> 2027)
+        const yrMatch = cleanOverride.match(/FY(\d{2,4})/);
+        let year = new Date().getFullYear();
+        const month = new Date().getMonth(); // 0-11
         
-      teamSheet.insertChart(pieChart);
-  }
+        if (yrMatch) {
+            // Parse FY27 to 2027, then subtract 1 so it starts in Feb 2026
+            let parsedYear = parseInt(yrMatch[1], 10);
+            parsedYear = parsedYear < 100 ? 2000 + parsedYear : parsedYear; 
+            year = parsedYear - 1; 
+        } else {
+            // Original Smart Year Offset (only if no explicit FY is provided)
+            if (quarter === "Q4" && month < 6) year -= 1;
+            if (quarter === "Q3" && month < 3) year -= 1;
+        }
 
-  // --- 7. COLUMN WIDTH MATCHING ---
-  teamSheet.setColumnWidth(8, 250); 
-  teamSheet.setColumnWidth(9, 60); 
-  teamSheet.setColumnWidth(10, 50); 
-  teamSheet.setColumnWidth(11, 50); 
-  teamSheet.setColumnWidth(12, 50); 
-  teamSheet.setColumnWidth(13, 90); 
-  teamSheet.setColumnWidth(14, 60); 
-  teamSheet.setColumnWidth(15, 50); 
-  
-  for (let c = 11; c <= 17; c++) { teamSheet.setColumnWidth(c, 85); }
-  [1, 2, 3, 5, 6, 7, 9, 10].forEach(c => teamSheet.setColumnWidth(c, 100)); 
-
-  teamSheet.hideColumns(32, 10); 
+        // Apply dates based on the extracted Quarter (Verkada FY: Feb 1 Start)
+        if (quarter === "Q1") { 
+            start = new Date(year, 1, 1);    // Feb 1
+            end = new Date(year, 3, 30);     // Apr 30
+        }
+        else if (quarter === "Q2") { 
+            start = new Date(year, 4, 1);    // May 1
+            end = new Date(year, 6, 31);     // Jul 31
+        }
+        else if (quarter === "Q3") { 
+            start = new Date(year, 7, 1);    // Aug 1
+            end = new Date(year, 9, 31);     // Oct 31
+        }
+        else if (quarter === "Q4") { 
+            start = new Date(year, 10, 1);   // Nov 1
+            end = new Date(year + 1, 0, 31); // Jan 31 (of the NEXT year)
+        } else {
+             // Fallback just in case they type something completely unreadable
+             const dBack = parseInt(getConfig("DaysBack"), 10) || 30;
+             const dAhead = parseInt(getConfig("DaysAhead"), 10) || 7;
+             start.setDate(start.getDate() - dBack);
+             end.setDate(end.getDate() + dAhead);
+        }
+    } else {
+        // Normal rolling window if no override is set
+        const dBack = parseInt(getConfig("DaysBack"), 10) || 30;
+        const dAhead = parseInt(getConfig("DaysAhead"), 10) || 7;
+        start.setDate(start.getDate() - dBack);
+        end.setDate(end.getDate() + dAhead);
+    }
+    
+    start.setHours(0,0,0,0);
+    end.setHours(23,59,59,999);
+    return { start, end };
 }
+
+function _parseNameFromEmail(email) {
+    if (!email) return "Unknown SE";
+    const localPart = String(email).split('@')[0]; 
+    const cleanLocal = localPart.replace(/-backup$/i, ''); 
+    const parts = cleanLocal.split(/[._]/);
+    const capitalized = parts.map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase());
+    return capitalized.join(' ');
+}
+
+/**
+ * 2. CRAWLER ENGINE (Backend DB Sync)
+ */
+function refreshTeamCalendarDatabase(appConfig) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!appConfig || !appConfig.team || !appConfig.team.enabled) return false;
+
+    const teamEmails = appConfig.team.members || [];
+    if (teamEmails.length === 0) return false;
+
+    ss.toast("Crawling team calendars via API...", "Syncing", 15);
+
+    const dbSheetName = "_TeamMeetingsDB";
+    let dbSheet = ss.getSheetByName(dbSheetName);
+    if (!dbSheet) { dbSheet = ss.insertSheet(dbSheetName).hideSheet(); } 
+    else { dbSheet.clear(); }
+
+    const headers = ["SE Name", "SE Email", "Title", "Start Time", "Duration (min)", "Tag", "Is Trip", "Nights Away", "External Attendees", "Attendee List", "Event ID", "Event Link"];
+    dbSheet.getRange(1, 1, 1, headers.length).setValues([headers])
+           .setFontWeight("bold").setBackground("#283e4d").setFontColor("white");
+    dbSheet.setFrozenRows(1);
+
+    const dates = _resolveManagerDashboardDates();
+    const tagMap = _buildTagDictionary();
+    const nightsAwayRules = _parseMatchRule(_getFilterList("NightsAwayKeywords").join(","));
+    const tagPrefix = "Verkada Meeting Tag: ";
+    const mod = getConfig("InPersonModifier") || "";
+    
+    let allParsedEvents = [];
+    let seenEventIds = new Set(); 
+
+    for (let i = 0; i < teamEmails.length; i++) {
+        const email = teamEmails[i];
+        const seName = _parseNameFromEmail(email);
+        ss.toast(`Crawling calendar ${i + 1} of ${teamEmails.length}...\n(${seName})`, "Progress", 5);
+
+        try {
+            let pageToken = null;
+            do {
+                const response = Calendar.Events.list(email, {
+                    timeMin: dates.start.toISOString(), timeMax: dates.end.toISOString(),
+                    singleEvents: true, maxResults: 2500, pageToken: pageToken,
+                    fields: "items(id,summary,description,start,end,attendees,organizer,htmlLink),nextPageToken" 
+                });
+
+                if (response.items) {
+                    for (const event of response.items) {
+                        if (seenEventIds.has(event.id)) continue;
+                        seenEventIds.add(event.id);
+
+                        const title = event.summary || "";
+                        let descRaw = (event.description || "").replace(/<br\s*\/?>/gi, '\n').replace(/<p>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<(?!(?:https?|tel):)[^>]*>/gi, ''); 
+                        const fullSearch = (title + " " + descRaw).toLowerCase();
+                        
+                        // 1. Tag Scrubbing 
+                        let assignedTag = "Untagged";
+                        const hasMainTag = descRaw.includes(tagPrefix);
+                        
+                        if (hasMainTag) {
+                            const prefixIndex = descRaw.indexOf(tagPrefix);
+                            if (prefixIndex !== -1) {
+                                let remainder = descRaw.substring(prefixIndex + tagPrefix.length);
+                                let rawContent = remainder.split(/\r?\n/)[0].trim();
+                                
+                                rawContent = rawContent.replace(/(?:p|br|div|span|hr|li|ul|ol|table|td|tr|th|html|body|a)(?:>|&gt;)/gi, '');
+                                rawContent = rawContent.replace(/&nbsp;|\u200B/gi, '').trim();
+                                
+                                let lookupKey = rawContent.replace(mod, "").replace(/;/g, "").trim();
+                                assignedTag = tagMap.get(lookupKey) || "Unknown Tag";
+                            }
+                        }
+
+                        let isTrip = _isMatch(fullSearch, nightsAwayRules);
+                        let nightsAwayCount = 0;
+                        let hasExternal = false; 
+
+                        const orgEmail = event.organizer && event.organizer.email ? String(event.organizer.email).toLowerCase().trim() : "";
+                        const attendees = (event.attendees || []).map(a => String(a.email).toLowerCase().trim());
+                        const allParticipants = [...new Set([orgEmail, ...attendees])].filter(Boolean);
+                        
+                        const isInternal = em => em.endsWith("@verkada.com") || em.includes("calendar.google.com");
+                        hasExternal = allParticipants.some(p => !isInternal(p));
+
+                        // 2. The Guardrail
+                        if (isTrip && !hasExternal && allParticipants.length > 2) {
+                            isTrip = false;
+                        }
+
+                        // 3. SMART NOISE FILTER 
+                        if (!hasExternal && !isTrip && assignedTag === "Untagged") continue; 
+
+                        if (isTrip) {
+                            if (event.start && event.start.date && event.end && event.end.date) {
+                                const sDate = new Date(event.start.date);
+                                const eDate = new Date(event.end.date);
+                                const diffDays = Math.round((eDate - sDate) / (1000 * 60 * 60 * 24));
+                                nightsAwayCount = diffDays > 0 ? diffDays - 1 : 0;
+                            } else {
+                                nightsAwayCount = 0; 
+                            }
+                        }
+
+                        const attendeeString = allParticipants.join(", ");
+                        
+                        // FIX: Safely construct the hyperlink formula by escaping any hidden quotes
+                        let eventLink = "No Link Available";
+                        if (event.htmlLink) {
+                            const safeUrl = String(event.htmlLink).replace(/"/g, '""');
+                            eventLink = `=HYPERLINK("${safeUrl}", "Event Link")`;
+                        }
+
+                        let durationMin = 0;
+                        if (event.start && event.start.dateTime) {
+                            const s = new Date(event.start.dateTime).getTime();
+                            const e = new Date(event.end.dateTime).getTime();
+                            durationMin = Math.round((e - s) / 60000);
+                        }
+
+                        allParsedEvents.push([
+                            seName, email, title, event.start.dateTime || event.start.date, durationMin, 
+                            assignedTag, isTrip, nightsAwayCount, hasExternal, attendeeString, event.id, eventLink
+                        ]);
+                    }
+                }
+                pageToken = response.nextPageToken;
+            } while (pageToken);
+        } catch (err) { console.warn(`Skipped ${email}: ${err.message}`); }
+    }
+
+    if (allParsedEvents.length > 0) {
+        dbSheet.getRange(2, 1, allParsedEvents.length, headers.length).setValues(allParsedEvents);
+        
+        // Force formatting AFTER pasting data so Google Sheets cannot auto-detect the wrong format!
+        dbSheet.getRange("D:D").setNumberFormat("yyyy-mm-dd hh:mm AM/PM"); 
+        dbSheet.getRange("E:E").setNumberFormat("0"); 
+    }
+    return true;
+}
+
+
+/**
+ * 3. DASHBOARD GENERATOR (Decoupled Frontend UI V1.8)
+ */
+function generateManagerDashboard(appConfig) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!appConfig || !appConfig.team || !appConfig.team.enabled) return;
+
+    const dbSheetName = "_TeamMeetingsDB";
+    const dbSheet = ss.getSheetByName(dbSheetName);
+    
+    if (!dbSheet || dbSheet.getLastRow() < 2) { 
+        SpreadsheetApp.getUi().alert("No team data found! Please run the 'TEST_SyncBackendData' tool first.");
+        return; 
+    }
+
+    const dashSheetName = "Manager Team Analysis";
+    let sheet = ss.getSheetByName(dashSheetName);
+    if (!sheet) { sheet = ss.insertSheet(dashSheetName); } 
+    
+    let existingReps = new Map();
+    const oldData = sheet.getDataRange().getValues();
+    let headerRowIndex = -1;
+    for(let r=0; r<oldData.length; r++) { if(oldData[r][0] === "SE Name") { headerRowIndex = r; break; } }
+    if (headerRowIndex !== -1) {
+        const oldHeaders = oldData[headerRowIndex];
+        const repsColIdx = oldHeaders.indexOf("Reps");
+        if (repsColIdx !== -1) {
+            for(let r=headerRowIndex+1; r<oldData.length; r++) {
+                const sName = oldData[r][0];
+                const sReps = oldData[r][repsColIdx];
+                if (sName && sReps !== "") existingReps.set(sName, sReps);
+            }
+        }
+    }
+
+    sheet.clear();
+    const charts = sheet.getCharts();
+    for (let i = 0; i < charts.length; i++) { sheet.removeChart(charts[i]); }
+    sheet.setHiddenGridlines(true); 
+
+    const dbData = dbSheet.getDataRange().getValues();
+
+    const headerRenameMap = {
+        "Best Practice": "BP",
+        "Existing Customer Support": "CX Supp",
+        "Trial Setup/Config": "Trials",
+        "Project Scoping": "Scoping",
+        "Verkada-Sponsored Event": "Event", 
+        "Existing Customer Check-In / CBR": "CBR",
+        "Pricing / Proposal": "Proposal",
+        "Partner Onboarding / Training": "Partner Training", 
+        "Verkada Internal Team Discussions": "Internal",
+        "Deal Related Discussion": "Deal Sync",
+        "Dedicated Discovery Call": "Discovery",
+        "RFP / RFI / Security Questionnaire": "RFP"
+    };
+
+    const seStats = new Map(); 
+    const teamWideTagCounts = new Map();
+    let totalTeamMeetings = 0;
+    let totalTeamNightsAway = 0;
+
+    for (let i = 1; i < dbData.length; i++) {
+        const row = dbData[i];
+        const seName = row[0]; 
+        const durationMin = Number(row[4]) || 0; 
+        const rawTag = row[5]; 
+        
+        const isTrip = row[6] === true || String(row[6]).toUpperCase() === "TRUE"; 
+        const nightsAwayCount = Number(row[7]) || 0; 
+        const hasExternal = row[8] === true || String(row[8]).toUpperCase() === "TRUE"; 
+        
+        if (!seStats.has(seName)) { seStats.set(seName, { total: 0, untagged: 0, time: 0, tags: {} }); }
+        const stats = seStats.get(seName);
+
+        // 1. Process Trips first
+        if (isTrip) {
+            totalTeamNightsAway += nightsAwayCount;
+            continue; 
+        }
+
+        // --- TAG PRE-PROCESSING ---
+        let cleanTag = rawTag.endsWith(';') ? rawTag.slice(0, -1).trim() : rawTag;
+        let baseTag = cleanTag.replace(/\s*\([^)]+\)$/, '').trim();
+
+        // --- 2. THE BLACKLIST ---
+        // Add tags here that should NEVER be counted, regardless of external attendees
+        const blacklistedTags = ["Other", "Personal"]; 
+        if (blacklistedTags.includes(baseTag)) {
+            continue;
+        }
+
+        // --- 3. THE INTERNAL WHITELIST ---
+        // Add tags here that SHOULD be counted, even if they are internal-only
+        const internalExceptions = [
+            "AE Enablement" 
+        ];
+        let isInternalException = internalExceptions.includes(baseTag); 
+
+        // --- 4. THE BOUNCER ---
+        if (!hasExternal && !isInternalException) {
+            continue; 
+        }
+
+        // --- 5. COUNT METRICS ---
+        stats.total++;
+        stats.time += durationMin; 
+        totalTeamMeetings++;
+
+        if (rawTag === "Untagged" || rawTag === "Unknown Tag") {
+            stats.untagged++;
+            continue;
+        }
+
+        let displayTag = headerRenameMap[baseTag] || baseTag;
+        stats.tags[displayTag] = (stats.tags[displayTag] || 0) + 1;
+        teamWideTagCounts.set(displayTag, (teamWideTagCounts.get(displayTag) || 0) + 1);
+    }
+
+    // Determine Top Performers
+    let topSE = "N/A"; let topSECount = 0;
+    let leastUntagged = Infinity; let leastUntaggedSE = "N/A";
+    let maxWalks = 0; let siteWalkerSE = "N/A";
+    let maxTime = 0; let mostTimeSE = "N/A"; 
+    
+    // --- NEW SCORECARD VARIABLES ---
+    let maxAeSifu = 0; let aeSifuSE = "N/A"; 
+    let maxPartnerSifu = 0; let partnerSifuSE = "N/A";
+    let maxCustomerSuperstar = 0; let customerSuperstarSE = "N/A";
+    
+    const sortedSEs = Array.from(seStats.keys()).sort();
+
+    for (const name of sortedSEs) {
+        const stats = seStats.get(name);
+        
+        // Standard Metrics
+        if (stats.total > topSECount) { topSECount = stats.total; topSE = name; }
+        if (stats.time > maxTime) { maxTime = stats.time; mostTimeSE = name; } 
+        if (stats.total > 0 && stats.untagged < leastUntagged) { leastUntagged = stats.untagged; leastUntaggedSE = name; }
+        
+        // Tag-Specific Metrics
+        const walks = stats.tags["Site Walk"] || 0;
+        if (walks > maxWalks) { maxWalks = walks; siteWalkerSE = name; }
+        
+        const aeEnablementCount = stats.tags["AE Enablement"] || 0;
+        if (aeEnablementCount > maxAeSifu) { maxAeSifu = aeEnablementCount; aeSifuSE = name; }
+        
+        // FIX: Must use the names defined in the 'headerRenameMap' to find the count!
+        const partnerCount = stats.tags["Partner Training"] || 0;
+        if (partnerCount > maxPartnerSifu) { maxPartnerSifu = partnerCount; partnerSifuSE = name; }
+        
+        const customerCount = (stats.tags["CX Supp"] || 0) + (stats.tags["CBR"] || 0);
+        if (customerCount > maxCustomerSuperstar) { maxCustomerSuperstar = customerCount; customerSuperstarSE = name; }
+    }
+    
+    if (leastUntagged === Infinity) leastUntagged = 0; 
+    if (maxAeSifu === 0) aeSifuSE = "None"; 
+    if (maxPartnerSifu === 0) partnerSifuSE = "None";
+    if (maxCustomerSuperstar === 0) customerSuperstarSE = "None";
+
+    // Format the max time cleanly
+    let formattedTime = "0min";
+    if (maxTime > 0) {
+        const hrs = Math.floor(maxTime / 60);
+        const mins = maxTime % 60;
+        formattedTime = hrs > 0 ? `${hrs}hr ${mins}min` : `${mins}min`;
+    }
+
+    const startRow = 32; 
+    const rStart = startRow + 2; 
+    const rEnd = startRow + 1 + sortedSEs.length; 
+    const dynamicAvgFormula = `=IF(MAX(C${rStart}:C${rEnd})>0, INDEX(A${rStart}:A${rEnd}, MATCH(MAX(C${rStart}:C${rEnd}), C${rStart}:C${rEnd}, 0)) & " (" & TEXT(MAX(C${rStart}:C${rEnd}), "0.1") & ")", "Needs Rep Data")`;
+
+    // THE REORDERED SCORECARDS
+    const scorecards = [
+        // Top Row (Rows 2 & 3)
+        { title: "Total Team Mtgs", value: totalTeamMeetings, color: "#000000" },               
+        { title: "Top SE (Most Mtgs)", value: `${topSE} (${topSECount})`, color: "#38761d" },   
+        { title: "Highest Avg/Rep", value: dynamicAvgFormula, color: "#6aa84f", isFormula: true }, 
+        { title: "Least Untagged", value: `${leastUntaggedSE} (${leastUntagged})`, color: "#990000" }, 
+        
+        // Second Row (Rows 5 & 6)
+        { title: "Total Nights Away", value: totalTeamNightsAway, color: "#b45f06" },           
+        { title: "Most Time in Mtgs", value: `${mostTimeSE} (${formattedTime})`, color: "#1155cc" }, 
+        { title: "Site Walker", value: `${siteWalkerSE} (${maxWalks})`, color: "#38761d" },     
+        { title: "AE Sifu", value: `${aeSifuSE} (${maxAeSifu})`, color: "#674ea7" },
+        
+        // Third Row (Rows 8 & 9)
+        { title: "Partner Sifu", value: `${partnerSifuSE} (${maxPartnerSifu})`, color: "#e69138" }, // Orange
+        { title: "Customer Superstar", value: `${customerSuperstarSE} (${maxCustomerSuperstar})`, color: "#d50000" } // Red
+    ];
+    
+    // Dynamically pad the grid so the row always finishes perfectly flush (multiples of 4)
+    while (scorecards.length % 4 !== 0) {
+        scorecards.push({ title: "Metric Placeholder", value: "BLANK", color: "#cccccc" });
+    }
+
+    let cardRow = 2; let cardCol = 10; let count = 0;
+    for (let i = 0; i < scorecards.length; i++) {
+        const card = scorecards[i];
+        sheet.getRange(cardRow, cardCol, 1, 2).merge().setValue(card.title)
+             .setFontWeight("bold").setBackground("#f3f3f3").setHorizontalAlignment("center")
+             .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+        const valRange = sheet.getRange(cardRow + 1, cardCol, 1, 2).merge()
+             .setFontSize(11).setFontWeight("bold").setFontColor(card.color).setHorizontalAlignment("center")
+             .setBorder(true, true, true, true, true, true, "black", SpreadsheetApp.BorderStyle.SOLID);
+        if (card.isFormula) { valRange.setFormula(card.value); } else { valRange.setValue(card.value); }
+        
+        cardCol += 2; count++;
+        if (count >= 4) { cardCol = 10; cardRow += 3; count = 0; } 
+    }
+
+    let chartDataRow = 1;
+    for (const [tag, count] of teamWideTagCounts.entries()) {
+        sheet.getRange(`AA${chartDataRow}`).setValue(tag);
+        sheet.getRange(`AB${chartDataRow}`).setValue(count);
+        chartDataRow++;
+    }
+    sheet.hideColumn(sheet.getRange("AA1"));
+    sheet.hideColumn(sheet.getRange("AB1"));
+
+    if (teamWideTagCounts.size > 0) {
+        const customPalette = ['#263a45', '#398bbf', '#737373', '#93a4b0', '#c25a5a', '#546b7a', '#749bb8', '#b55a5a', '#d99c9c', '#b3cbe0', '#e3b2b2'];
+        const chartDataRange = sheet.getRange(`AA1:AB${chartDataRow - 1}`);
+        const pieChart = sheet.newChart()
+            .asPieChart().addRange(chartDataRange).setPosition(2, 1, 0, 0) 
+            .setOption('title', 'Team Aggregate: Meeting Types').setOption('is3D', true)
+            .setOption('pieSliceText', 'percentage').setOption('pieSliceTextStyle', {color: 'white', fontSize: 13})
+            .setOption('colors', customPalette).setOption('legend', {position: 'right', textStyle: {fontSize: 12}})
+            .setOption('width', 750).setOption('height', 520)
+            .build();
+        sheet.insertChart(pieChart);
+    }
+
+    const sortedTags = Array.from(teamWideTagCounts.keys()).sort();
+    const headers = ["SE Name", "Reps", "Avg/Rep", "Total Mtgs", "Untagged", ...sortedTags];
+    let tableData = [];
+    for (let idx = 0; idx < sortedSEs.length; idx++) {
+        const se = sortedSEs[idx];
+        const stats = seStats.get(se);
+        const dataRowNumber = startRow + 2 + idx; 
+        const repVal = existingReps.has(se) ? existingReps.get(se) : "";
+        const avgFormula = `=IF(ISNUMBER(B${dataRowNumber}), D${dataRowNumber}/B${dataRowNumber}, 0)`;
+        let row = [se, repVal, avgFormula, stats.total, stats.untagged];
+        for (const tag of sortedTags) { row.push(stats.tags[tag] || 0); }
+        tableData.push(row);
+    }
+
+    if (tableData.length > 0) {
+        // --- RICH TEXT HEADER LOGIC ---
+        const headerTitle = "UNOFFICIAL Manager Team Meeting Distribution Breakdown (from Calendar)";
+        
+        const titleRedStyle = SpreadsheetApp.newTextStyle()
+            .setForegroundColor("#ff0000") // Bright Red
+            .setFontSize(11)           
+            .setFontFamily("Poppins")
+            .setBold(true)
+            .build();
+            
+        const titleWhiteStyle = SpreadsheetApp.newTextStyle()
+            .setForegroundColor("#ffffff") // White
+            .setFontSize(11)
+            .setFontFamily("Poppins")
+            .setBold(true)
+            .build();
+            
+        const richTitle = SpreadsheetApp.newRichTextValue()
+            .setText(headerTitle)
+            .setTextStyle(0, 10, titleRedStyle) 
+            .setTextStyle(10, headerTitle.length, titleWhiteStyle)
+            .build();
+
+        sheet.getRange(startRow, 1, 1, headers.length).merge().setRichTextValue(richTitle)
+             .setBackground("#1a2b3c").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+        // ----------------------------------
+
+        sheet.getRange(startRow + 1, 1, 1, headers.length).setValues([headers])
+             .setFontWeight("bold").setBackground("#283e4d").setFontColor("white").setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+        const dataRange = sheet.getRange(startRow + 2, 1, tableData.length, headers.length);
+        dataRange.setValues(tableData);
+        dataRange.setHorizontalAlignment("center").setBorder(true, true, true, true, true, true, "#cccccc", SpreadsheetApp.BorderStyle.SOLID);
+        sheet.getRange(startRow + 2, 1, tableData.length, 1).setHorizontalAlignment("left").setFontWeight("bold");
+
+        dataRange.applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, false, false);
+
+        sheet.getRange(startRow + 2, 2, tableData.length, 1).setBackground("#f8f9fa"); 
+        sheet.getRange(startRow + 2, 3, tableData.length, 1).setNumberFormat("0.0"); 
+        sheet.getRange(startRow + 2, 4, tableData.length, 1).setNumberFormat("0"); 
+        sheet.getRange(startRow + 2, 5, tableData.length, 1).setBackground("#f4cccc").setFontColor("#990000").setFontWeight("bold");
+
+        if (headers.length > 5) {
+            const tagDataRange = sheet.getRange(startRow + 2, 6, tableData.length, headers.length - 5);
+            const firstCell = `F${startRow + 2}`;
+            const colTop1 = `=AND(${firstCell}>0, ${firstCell}=LARGE(F$${rStart}:F$${rEnd}, 1))`;
+            const colTop4 = `=AND(${firstCell}>0, ${firstCell}>=LARGE(F$${rStart}:F$${rEnd}, MIN(4, COUNTIF(F$${rStart}:F$${rEnd}, ">0"))), ${firstCell}<LARGE(F$${rStart}:F$${rEnd}, 1))`;
+            const ruleGreen = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(colTop1).setBackground("#d9ead3").setRanges([tagDataRange]).build();
+            const ruleYellow = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(colTop4).setBackground("#fff2cc").setRanges([tagDataRange]).build();
+            sheet.setConditionalFormatRules([ruleGreen, ruleYellow]);
+        }
+
+        sheet.setColumnWidth(1, 160); 
+        for (let c = 2; c <= headers.length; c++) {
+            let dynamicWidth = Math.round((String(headers[c - 1]).length * 7) + 25);
+            if (dynamicWidth < 65) dynamicWidth = 65;
+            sheet.setColumnWidth(c, dynamicWidth);
+        }
+    }
+    sheet.getRange("A1").activate();
+}
+
+/**
+ * Helper: Build Tag Dictionary
+ */
+function _buildTagDictionary() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const tagsSheet = ss.getSheetByName("Tags");
+    if (!tagsSheet) return new Map();
+    const tagsData = tagsSheet.getRange("B2:G" + tagsSheet.getLastRow()).getValues();
+    const tagMap = new Map(); 
+    tagsData.forEach(row => {
+        const tagName = row[1];
+        const abbrTag = row[2] ? String(row[2]).replace(/;/g, "").trim() : "";
+        if (abbrTag) tagMap.set(abbrTag, tagName);
+    });
+    return tagMap;
+}
+// #endregion
 
 // =================================================================
 // #region 7. INITIALIZATION & SCAFFOLDING (Include Radar Exclusion Option Flags)
@@ -2061,7 +2466,9 @@ function initializeAllSheets(options = {}) {
   repairUntaggedSheet(options); 
   repairConfigSheet(options);    
   repairFilterSheet(options);    
-  repairTagsSheet(options);      
+  repairTagsSheet(options); 
+
+  _toggleRadarConfigFields(options);     
   
   // 2. Conditional Radar Logic
   if (enableRadar) {
@@ -2316,7 +2723,7 @@ function repairConfigSheet(options = {}) { // Accept options
   configSheet.getRange("A:C").setFontFamily("Poppins");
   configSheet.getRange("A:A").setFontWeight("bold");
   configSheet.getRange("B:B").setFontWeight("bold").setWrap(true).setHorizontalAlignment("center").setVerticalAlignment("middle");
-  configSheet.getRange("C:C").setWrap(true);
+  configSheet.getRange("C:C").setWrap(true).setVerticalAlignment("middle");
   configSheet.getRange("D:D").setBackground("#283e4d");
   
   configSheet.setColumnWidth(1, 200);
@@ -2374,7 +2781,10 @@ function repairConfigSheet(options = {}) { // Accept options
       cell.clearDataValidations();
     }
   }
-
+  // ADDED RADAR SE NAME OPTION TOGGLE (v.2.9.12)
+  if (typeof _toggleRadarConfigFields === "function") {
+      _toggleRadarConfigFields(options);
+  }
   // 2. Restore Order with options passed in:
   repairSheetStructure(options);
 
@@ -2418,7 +2828,7 @@ function repairFilterSheet(options = {}) { // Accept options
     "IgnoreFromEmails":     [""], 
     "IgnoreToEmails":       [""], 
     "NightsAwayKeywords":   ["hotel", "trip", "stay"],  
-    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce"], 
+    "AutoInPersonKeywords": ["sitewalk", "site walk", "vce(!coverage)"], 
     "AutoSELeadKeywords":   [""],
     "AutoSECoverageKeywords": [""],
     "LocationExclusions":   ["room", "huddle", "phone booth", "conf", "internal"] // v2.9.6
@@ -2520,7 +2930,7 @@ function repairTagsSheet(options = {}) {
     ["", "Trial Setup/Config (SE)", "TC (SE);", "trial, setup, config, configuration", true, "", "", ""],
     ["", "Site Walk (SE)", "SW (SE);", "sitewalk, site walk", true, "", "", ""],
     ["", "Floorplans (SE)", "FP (SE);", "floorplan", true, "", "", ""],
-    ["", "VCE Training (SE)", "VT (SE);", "vce", true, "", "", ""],
+    ["", "VCE Training (SE)", "VT (SE);", "vce(!coverage)", true, "", "", ""],
     ["", "Partner Onboarding / Training (SE)", "PT (SE);", "", "", "", "", ""],
     ["", "Industry Conference / Trade Show (SE)", "TS (SE);", "", "", "", "", ""],
     ["", "Verkada-Sponsored Event (SE)", "VM (SE);", "", "", "", "", ""],
@@ -2545,7 +2955,7 @@ function repairTagsSheet(options = {}) {
     ["Personal", "", "", "", "", "", "", ""], 
     ["", "Viper Team", "VPR (SE);", "Viper", true, "", "", ""],
     ["", "Verkada Internal Team Discussions", "INT (SE);", "", "", "", "", ""],
-    ["", "Travel Time", "TRVL (SE);", "Flight, Layover, Drive to, Commute", true, "", "", ""],
+    ["", "Travel Time", "TRVL (SE);", "Flight:, Layover, Drive to, Commute", true, "", "", ""],
     ["", "Overnight", "SLEEP (SE);", "Stay:, Stay At", true, "", "", ""]
   ];
 
