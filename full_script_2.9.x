@@ -1898,6 +1898,7 @@ function generateDashboard(options = {}) {
   visualsSheet.setColumnWidth(15, 50); 
   for (let c = 16; c <= 40; c++) { visualsSheet.setColumnWidth(c, 85); } 
 
+  // _generateTeamDashboard(options);
 
   visualsSheet.hideColumns(27, 20); 
   repairSheetStructure(options); 
